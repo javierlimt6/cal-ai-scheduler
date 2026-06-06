@@ -15,6 +15,8 @@ MAX_TOOL_ITERATIONS = 8
 # Cap per-session history so long-lived sessions don't grow without bound
 # (in tokens sent to the LLM or in memory).
 MAX_HISTORY_MESSAGES = 60
+# Cap the number of concurrent sessions; oldest-created are evicted first.
+MAX_SESSIONS = 500
 
 
 @dataclass
@@ -47,6 +49,8 @@ class Agent:
         self._sessions: dict[str, list[Message]] = {}
 
     async def chat(self, session_id: str, user_message: str) -> AgentReply:
+        if session_id not in self._sessions and len(self._sessions) >= MAX_SESSIONS:
+            self._sessions.pop(next(iter(self._sessions)))
         history = self._sessions.setdefault(session_id, [])
         self._trim(history)
         history.append(Message(role="user", content=user_message))
