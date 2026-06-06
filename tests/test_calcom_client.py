@@ -129,6 +129,32 @@ async def test_error_response_raises_calcom_error(client):
 
 
 @respx.mock
+async def test_no_auth_header_when_api_key_empty():
+    route = respx.get(f"{BASE}/bookings").mock(
+        return_value=httpx.Response(200, json={"status": "success", "data": []})
+    )
+    keyless = CalComClient(api_key="", base_url=BASE)
+    try:
+        await keyless.list_bookings()
+    finally:
+        await keyless.aclose()
+
+    assert "Authorization" not in route.calls.last.request.headers
+
+
+@respx.mock
+async def test_string_error_body_is_surfaced(client):
+    respx.get(f"{BASE}/bookings").mock(
+        return_value=httpx.Response(403, json={"status": "error", "error": "Forbidden resource"})
+    )
+
+    with pytest.raises(CalComError) as exc_info:
+        await client.list_bookings()
+
+    assert "Forbidden resource" in str(exc_info.value)
+
+
+@respx.mock
 async def test_network_error_becomes_calcom_error(client):
     respx.get(f"{BASE}/bookings").mock(side_effect=httpx.ConnectError("dns failure"))
 

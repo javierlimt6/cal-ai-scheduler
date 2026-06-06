@@ -15,7 +15,7 @@ MAX_TOOL_ITERATIONS = 8
 # Cap per-session history so long-lived sessions don't grow without bound
 # (in tokens sent to the LLM or in memory).
 MAX_HISTORY_MESSAGES = 60
-# Cap the number of concurrent sessions; oldest-created are evicted first.
+# Cap the number of tracked sessions; least-recently-used are evicted first.
 MAX_SESSIONS = 500
 
 
@@ -61,6 +61,9 @@ class Agent:
             self._sessions.pop(evicted)
             self._locks.pop(evicted, None)
         history = self._sessions.setdefault(session_id, [])
+        # Re-insert to refresh recency: dict order doubles as the LRU order,
+        # so active sessions aren't the ones evicted.
+        self._sessions[session_id] = self._sessions.pop(session_id)
         self._trim(history)
         history.append(Message(role="user", content=user_message))
         system_prompt = self._system_prompt()
@@ -71,6 +74,7 @@ class Agent:
 
             if not response.tool_calls:
                 history.append(Message(role="assistant", content=response.text))
+                self._trim(history)
                 return AgentReply(text=response.text, tool_activity=activity)
 
             history.append(
@@ -89,6 +93,7 @@ class Agent:
 
         text = "I wasn't able to finish that in a reasonable number of steps — could you rephrase or break it down?"
         history.append(Message(role="assistant", content=text))
+        self._trim(history)
         return AgentReply(text=text, tool_activity=activity)
 
     async def _run_tool(self, call: ToolCall) -> tuple[str, bool]:

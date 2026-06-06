@@ -26,6 +26,7 @@ async def lifespan(app: FastAPI):
         logger.warning(
             "CAL_API_KEY is not set — cal.com calls will fail. Copy .env.example to .env."
         )
+    build_system_prompt(settings.timezone)  # fail fast on an invalid TIMEZONE
     calcom = CalComClient(api_key=settings.cal_api_key, base_url=settings.cal_api_base_url)
     app.state.agent = Agent(
         provider=get_provider(settings.llm_provider),

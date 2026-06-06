@@ -153,6 +153,38 @@ async def test_concurrent_same_session_turns_do_not_interleave(agent):
     assert [m.role for m in history] == ["user", "assistant", "tool", "assistant"] * 2
 
 
+def test_trim_caps_history_and_realigns_to_user_turn():
+    from app.agent.loop import MAX_HISTORY_MESSAGES
+    from app.llm import Message
+
+    # Build an over-long history of repeating 4-message turns
+    turn = [
+        Message(role="user", content="u"),
+        Message(role="assistant", content="", tool_calls=[ToolCall(id="x", name="t", arguments={})]),
+        Message(role="tool"),
+        Message(role="assistant", content="a"),
+    ]
+    history = [m for _ in range(30) for m in turn]  # 120 messages
+
+    Agent._trim(history)
+
+    assert len(history) <= MAX_HISTORY_MESSAGES
+    assert history[0].role == "user"
+
+
+async def test_lru_session_eviction_keeps_active_sessions(agent, monkeypatch):
+    import app.agent.loop as loop_module
+
+    monkeypatch.setattr(loop_module, "MAX_SESSIONS", 2)
+
+    await agent.chat("a", "What's on my calendar?")
+    await agent.chat("b", "What's on my calendar?")
+    await agent.chat("a", "What event types do I have?")  # refresh "a"
+    await agent.chat("c", "What's on my calendar?")  # evicts "b" (least recent), not "a"
+
+    assert set(agent._sessions) == {"a", "c"}
+
+
 async def test_runaway_tool_loop_is_capped(fake):
     class AlwaysToolProvider:
         async def complete(self, system, messages, tools):

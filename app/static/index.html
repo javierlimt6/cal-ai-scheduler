@@ -171,11 +171,14 @@ addMessage("assistant",
   "Hi! I can manage your cal.com calendar — ask me to book something, " +
   "see what's coming up, or move and cancel events.");
 
+let inFlight = false;  // Enter can submit even while the button is disabled
+
 form.addEventListener("submit", async (e) => {
   e.preventDefault();
   const text = input.value.trim();
-  if (!text) return;
+  if (!text || inFlight) return;
 
+  inFlight = true;
   addMessage("user", text);
   input.value = "";
   sendBtn.disabled = true;
@@ -205,6 +208,7 @@ form.addEventListener("submit", async (e) => {
     typing.remove();
     addMessage("assistant", "I couldn't reach the server — is it still running?");
   } finally {
+    inFlight = false;
     sendBtn.disabled = false;
     input.focus();
   }

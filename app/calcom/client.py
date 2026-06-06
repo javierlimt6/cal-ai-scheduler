@@ -27,11 +27,11 @@ class CalComError(Exception):
 
 class CalComClient:
     def __init__(self, api_key: str, base_url: str = "https://api.cal.com/v2"):
-        self._http = httpx.AsyncClient(
-            base_url=base_url,
-            headers={"Authorization": f"Bearer {api_key}"},
-            timeout=30.0,
-        )
+        # Omit the header entirely when no key is configured: cal.com then
+        # returns a clear 401 message (vs. an opaque protocol error for an
+        # empty Bearer value), and public endpoints still work.
+        headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+        self._http = httpx.AsyncClient(base_url=base_url, headers=headers, timeout=30.0)
 
     async def aclose(self) -> None:
         await self._http.aclose()
@@ -59,10 +59,12 @@ class CalComClient:
             raise CalComError(503, f"Could not reach cal.com ({exc.__class__.__name__})") from exc
         if response.is_error:
             try:
-                message = response.json().get("error", {}).get("message", response.text)
+                error = response.json().get("error")
+                # The error payload is usually {"message": ...} but can be a bare string
+                message = error.get("message") if isinstance(error, dict) else error
             except ValueError:
-                message = response.text
-            raise CalComError(response.status_code, message)
+                message = None
+            raise CalComError(response.status_code, str(message) if message else response.text)
         body = response.json()
         return body.get("data", body)
 
