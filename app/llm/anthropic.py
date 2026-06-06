@@ -54,6 +54,10 @@ class AnthropicProvider:
             raise LLMProviderError(
                 "Could not reach the Anthropic API — check your network and try again."
             ) from exc
+        except anthropic.APIError as exc:
+            # Catch-all for SDK errors outside the two families above
+            # (e.g. response validation) so no vendor exception escapes.
+            raise LLMProviderError(f"Anthropic API error: {exc}") from exc
         return from_anthropic_response(response)
 
 
@@ -67,7 +71,7 @@ def to_anthropic_messages(messages: list[Message]) -> list[dict[str, Any]]:
         if message.role == "user":
             out.append({"role": "user", "content": message.content})
         elif message.role == "assistant":
-            if message.raw is not None:
+            if message.raw:  # truthiness: an empty block list must fall through
                 # Replay the provider's own content blocks verbatim: required
                 # for thinking blocks mid tool-turn, and byte-identical for
                 # everything else.

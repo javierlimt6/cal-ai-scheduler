@@ -3,6 +3,7 @@
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
@@ -24,6 +25,18 @@ RATE_LIMIT_WINDOW_SECONDS = 60.0
 logger = logging.getLogger(__name__)
 
 
+def _validate_timezone(name: str) -> str:
+    """Return ``name`` if it's a usable IANA timezone, else "" (with a warning)."""
+    if not name:
+        return ""
+    try:
+        ZoneInfo(name)
+    except (ValueError, KeyError):  # ZoneInfoNotFoundError is a KeyError
+        logger.warning("Ignoring invalid timezone %r from the cal.com profile", name)
+        return ""
+    return name
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
@@ -35,12 +48,15 @@ async def lifespan(app: FastAPI):
 
     # Identity bootstrap: anything not configured explicitly comes from the
     # authenticated cal.com profile, so a bare CAL_API_KEY is enough to run.
+    # Profile data is best-effort — a bad value degrades, never crashes boot
+    # (an explicit TIMEZONE env var, by contrast, still fails fast below).
     username, timezone = settings.cal_username, settings.timezone
     if settings.cal_api_key and not (username and timezone):
         try:
             me = await calcom.get_me()
             username = username or me.get("username") or ""
-            timezone = timezone or me.get("timeZone") or ""
+            if not timezone:
+                timezone = _validate_timezone(str(me.get("timeZone") or ""))
             logger.info("Resolved from cal.com /me: username=%r, timezone=%r", username, timezone)
         except CalComError as exc:
             logger.warning("Could not resolve profile from cal.com /me: %s", exc)

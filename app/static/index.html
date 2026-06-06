@@ -173,7 +173,9 @@ const messagesEl = document.getElementById("messages");
 const form = document.getElementById("chat-form");
 const input = document.getElementById("input");
 const sendBtn = document.getElementById("send");
-const sessionId = crypto.randomUUID();
+// crypto.randomUUID only exists in secure contexts (https / localhost)
+const sessionId = crypto.randomUUID ? crypto.randomUUID()
+  : `${Date.now().toString(16)}-${Math.random().toString(16).slice(2)}`;
 
 // Minimal markdown for assistant replies (bold, inline code, "- " lists).
 // Built entirely with DOM nodes — model/user text never reaches innerHTML.
@@ -201,8 +203,10 @@ function renderRichText(container, text) {
       renderInline(li, item[1]);
       list.appendChild(li);
     } else {
+      // No newline node right after a </ul> — the block break is implicit
+      const afterList = list !== null;
       list = null;
-      if (i > 0) container.appendChild(document.createTextNode("\n"));
+      if (i > 0 && !afterList) container.appendChild(document.createTextNode("\n"));
       const heading = line.match(/^#{1,4}\s+(.*)$/);
       if (heading) {
         const strong = document.createElement("strong");
@@ -280,23 +284,10 @@ function addPendingCard(pending) {
   messagesEl.scrollTop = messagesEl.scrollHeight;
   activeCard = card;
 
-  const decide = (approved) => async () => {
+  const decide = (approved) => () => {
     retireActiveCard();
-    try {
-      const res = await fetch("/api/chat/confirm", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ session_id: sessionId, action_id: pending.id, approved }),
-      });
-      if (!res.ok) {
-        const detail = (await res.json().catch(() => ({}))).detail;
-        addMessage("assistant", detail || "Sorry, something went wrong. Please try again.");
-        return;
-      }
-      handleReply(await res.json());
-    } catch {
-      addMessage("assistant", "I couldn't reach the server — is it still running?");
-    }
+    postAndRender("/api/chat/confirm",
+      { session_id: sessionId, action_id: pending.id, approved });
   };
   confirmBtn.addEventListener("click", decide(true));
   declineBtn.addEventListener("click", decide(false));
@@ -306,6 +297,25 @@ function handleReply(data) {
   addToolActivity(data.tool_activity);
   addMessage("assistant", data.reply);
   if (data.pending_action) addPendingCard(data.pending_action);
+}
+
+// Shared POST → render path for /api/chat and /api/chat/confirm
+async function postAndRender(url, payload) {
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      const detail = (await res.json().catch(() => ({}))).detail;
+      addMessage("assistant", detail || "Sorry, something went wrong. Please try again.");
+      return;
+    }
+    handleReply(await res.json());
+  } catch {
+    addMessage("assistant", "I couldn't reach the server — is it still running?");
+  }
 }
 
 addMessage("assistant",
@@ -332,22 +342,9 @@ form.addEventListener("submit", async (e) => {
   messagesEl.scrollTop = messagesEl.scrollHeight;
 
   try {
-    const res = await fetch("/api/chat", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ session_id: sessionId, message: text }),
-    });
-    typing.remove();
-    if (!res.ok) {
-      const detail = (await res.json().catch(() => ({}))).detail;
-      addMessage("assistant", detail || "Sorry, something went wrong. Please try again.");
-      return;
-    }
-    handleReply(await res.json());
-  } catch {
-    typing.remove();
-    addMessage("assistant", "I couldn't reach the server — is it still running?");
+    await postAndRender("/api/chat", { session_id: sessionId, message: text });
   } finally {
+    typing.remove();  // same task as the render — no visible flicker
     inFlight = false;
     sendBtn.disabled = false;
     input.focus();

@@ -240,7 +240,9 @@ def _describe_outcome(call: ToolCall, content: str, ok: bool) -> str:
     if call.name == "reschedule_booking":
         try:
             data = json.loads(content)
-            return f"Done — rescheduled to {data.get('start', 'the new time')}."
         except ValueError:
-            return "Done — the booking has been rescheduled."
+            data = None
+        if isinstance(data, dict):
+            return f"Done — rescheduled to {data.get('start', 'the new time')}."
+        return "Done — the booking has been rescheduled."
     return f"Done — {call.name} completed."

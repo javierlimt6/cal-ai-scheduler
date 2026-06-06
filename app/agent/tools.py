@@ -140,8 +140,9 @@ TOOLS = [
     ToolDef(
         name="cancel_booking",
         description=(
-            "Cancel a booking by its uid. Confirm with the user before calling this — it is "
-            "destructive. Find the uid via list_bookings if you don't have it."
+            "Cancel a booking by its uid (find it via list_bookings if you don't have it). "
+            "Calling this does not cancel immediately: the app holds the action and asks the "
+            "user to confirm via a card in the UI."
         ),
         parameters={
             "type": "object",
@@ -155,8 +156,9 @@ TOOLS = [
     ToolDef(
         name="reschedule_booking",
         description=(
-            "Move an existing booking to a new start time. Confirm the new time with the user "
-            "first, and check it's available with get_available_slots."
+            "Move an existing booking to a new start time (check it's available with "
+            "get_available_slots first). Calling this does not reschedule immediately: the app "
+            "holds the action and asks the user to confirm via a card in the UI."
         ),
         parameters={
             "type": "object",

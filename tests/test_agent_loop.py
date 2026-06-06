@@ -20,7 +20,8 @@ class FakeCalCom:
     async def list_event_types(self, username):
         return [{"id": 123, "title": "30-min intro", "lengthInMinutes": 30}]
 
-    async def get_slots(self, event_type_id, start, end, time_zone=None):
+    async def get_slots(self, start, end, event_type_id=None, time_zone=None, duration=None):
+        # parameter order mirrors the SchedulingClient protocol
         return {"2026-06-11": [{"start": "2026-06-11T15:00:00Z"}]}
 
     async def create_booking(
@@ -103,6 +104,21 @@ async def test_reschedule_is_gated_then_executes_on_confirm(agent):
     done = await agent.resolve_pending("s1", reply.pending_action.id, approved=True)
 
     assert "2026-06-12T10:00:00Z" in done.text
+
+
+async def test_confirmed_outcome_tolerates_non_dict_tool_results(agent, fake):
+    """A list/scalar-shaped API response must not 500 after the action ran."""
+
+    async def list_shaped_reschedule(booking_uid, new_start, reason=None):
+        return [{"uid": booking_uid, "start": new_start}]
+
+    agent._dispatch["reschedule_booking"] = list_shaped_reschedule
+    reply = await agent.chat("s1", "Reschedule booking abc123def to 2026-06-12T10:00:00Z")
+
+    done = await agent.resolve_pending("s1", reply.pending_action.id, approved=True)
+
+    assert "rescheduled" in done.text.lower()
+    assert done.tool_activity[0].ok
 
 
 async def test_new_message_invalidates_pending_action(agent, fake):

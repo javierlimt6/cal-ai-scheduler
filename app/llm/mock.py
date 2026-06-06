@@ -183,12 +183,6 @@ class MockProvider:
                 f"(uid: {data.get('uid', '?')})."
             )
 
-        if tool_name == "cancel_booking":
-            return "Done — the booking has been cancelled."
-
-        if tool_name == "reschedule_booking":
-            return (
-                f"Rescheduled — new time is {data.get('start', '?')} (uid: {data.get('uid', '?')})."
-            )
-
+        # cancel/reschedule successes never reach here: the agent's confirmation
+        # gate executes them server-side and authors the outcome text itself.
         return f"Result from {tool_name}: {json.dumps(data, indent=2)[:1500]}"

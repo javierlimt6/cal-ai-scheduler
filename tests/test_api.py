@@ -151,3 +151,28 @@ async def test_username_resolved_from_me_when_unset(monkeypatch):
 
     assert response.status_code == 200
     assert "username=resolved-user" in str(events_route.calls.last.request.url)
+
+
+@respx.mock
+async def test_invalid_profile_timezone_degrades_instead_of_crashing_startup(monkeypatch):
+    from app.config import get_settings
+
+    monkeypatch.setenv("CAL_API_KEY", "cal_test_key")
+    get_settings.cache_clear()
+
+    respx.get(f"{CAL_BASE}/me").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "status": "success",
+                "data": {"username": "u", "timeZone": "Pacific Time"},  # not IANA
+            },
+        )
+    )
+
+    async with httpx.ASGITransport(app=app) as transport:
+        async with app.router.lifespan_context(app):  # must not raise
+            async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+                response = await client.get("/api/health")
+
+    assert response.status_code == 200
