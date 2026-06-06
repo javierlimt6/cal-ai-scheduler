@@ -1,0 +1,132 @@
+import pytest
+
+from app.agent import Agent, build_dispatch, build_system_prompt
+from app.calcom import CalComError
+from app.llm import LLMResponse, MockProvider, ToolCall
+
+
+class FakeCalCom:
+    """In-memory stand-in for CalComClient used as the dispatch backend."""
+
+    def __init__(self):
+        self.bookings = [
+            {"uid": "abc123def", "title": "Intro call", "start": "2026-06-11T14:00:00Z"},
+        ]
+        self.cancelled: list[str] = []
+
+    async def list_bookings(self, **kwargs):
+        return self.bookings
+
+    async def list_event_types(self, username):
+        return [{"id": 123, "title": "30-min intro", "lengthInMinutes": 30}]
+
+    async def get_slots(self, event_type_id, start, end, time_zone=None):
+        return {"2026-06-11": [{"start": "2026-06-11T15:00:00Z"}]}
+
+    async def create_booking(self, event_type_id, start, attendee_name, attendee_email, time_zone, **kwargs):
+        booking = {"uid": "new42uid", "title": "30-min intro", "start": start}
+        self.bookings.append(booking)
+        return booking
+
+    async def cancel_booking(self, booking_uid, reason=None):
+        self.cancelled.append(booking_uid)
+        return {"uid": booking_uid, "status": "cancelled"}
+
+    async def reschedule_booking(self, booking_uid, new_start, reason=None):
+        return {"uid": booking_uid + "x", "start": new_start}
+
+
+@pytest.fixture
+def fake():
+    return FakeCalCom()
+
+
+@pytest.fixture
+def agent(fake):
+    dispatch = build_dispatch(fake, "testuser")
+    return Agent(MockProvider(), dispatch, lambda: build_system_prompt("UTC"))
+
+
+async def test_view_calendar(agent):
+    reply = await agent.chat("s1", "What's on my calendar?")
+
+    assert "Intro call" in reply.text
+    assert "abc123def" in reply.text
+    assert [a.name for a in reply.tool_activity] == ["list_bookings"]
+    assert reply.tool_activity[0].ok
+
+
+async def test_book_event(agent, fake):
+    reply = await agent.chat(
+        "s1", "Book event type 123 at 2026-06-12T10:00:00Z for ada@example.com"
+    )
+
+    assert "Booked" in reply.text
+    assert "new42uid" in reply.text
+    assert len(fake.bookings) == 2
+
+
+async def test_cancel_booking(agent, fake):
+    reply = await agent.chat("s1", "Cancel booking abc123def")
+
+    assert "cancelled" in reply.text.lower()
+    assert fake.cancelled == ["abc123def"]
+
+
+async def test_reschedule_booking(agent):
+    reply = await agent.chat("s1", "Reschedule booking abc123def to 2026-06-12T10:00:00Z")
+
+    assert "Rescheduled" in reply.text
+    assert "2026-06-12T10:00:00Z" in reply.text
+
+
+async def test_list_event_types(agent):
+    reply = await agent.chat("s1", "What event types do I have?")
+
+    assert "30-min intro" in reply.text
+    assert "123" in reply.text
+
+
+async def test_tool_error_is_relayed_conversationally(agent):
+    async def failing_list_bookings(**kwargs):
+        raise CalComError(401, "Invalid API key")
+
+    agent._dispatch["list_bookings"] = failing_list_bookings
+
+    reply = await agent.chat("s1", "What's on my calendar?")
+
+    assert "didn't work" in reply.text
+    assert "Invalid API key" in reply.text
+    assert not reply.tool_activity[0].ok
+
+
+async def test_sessions_are_isolated(agent):
+    await agent.chat("session-a", "What's on my calendar?")
+    await agent.chat("session-b", "What event types do I have?")
+
+    # user, assistant w/ tool_call, tool results, final assistant
+    assert len(agent._sessions["session-a"]) == 4
+    assert agent._sessions["session-a"] is not agent._sessions["session-b"]
+
+
+async def test_missing_details_asks_instead_of_calling_tools(agent):
+    reply = await agent.chat("s1", "Book a meeting")
+
+    assert reply.tool_activity == []
+    assert "event type" in reply.text.lower()
+
+
+async def test_runaway_tool_loop_is_capped(fake):
+    class AlwaysToolProvider:
+        async def complete(self, system, messages, tools):
+            return LLMResponse(
+                tool_calls=[ToolCall(id="x", name="list_bookings", arguments={})]
+            )
+
+    dispatch = {"list_bookings": fake.list_bookings}
+    agent = Agent(AlwaysToolProvider(), dispatch, lambda: "system")
+
+    reply = await agent.chat("s1", "loop forever")
+
+    assert len(reply.tool_activity) == 8
+    assert "rephrase" in reply.text
