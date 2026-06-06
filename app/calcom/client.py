@@ -5,9 +5,12 @@ Note: cal.com versions its v2 endpoints individually via the
 for its endpoint.
 """
 
+import logging
 from typing import Any
 
 import httpx
+
+logger = logging.getLogger(__name__)
 
 BOOKINGS_LIST_API_VERSION = "2026-05-01"
 BOOKINGS_WRITE_API_VERSION = "2026-02-25"
@@ -44,7 +47,12 @@ class CalComClient:
         api_version: str,
         params: dict[str, Any] | None = None,
         json: dict[str, Any] | None = None,
+        envelope: bool = False,
     ) -> Any:
+        """Make one API call. Returns the unwrapped ``data`` payload, or the
+        full ``{"status", "data", "pagination", ...}`` body when ``envelope``
+        is set (for endpoints whose metadata matters, e.g. cursor pagination).
+        """
         # httpx serializes None params/body values as empty rather than
         # omitting them, so strip optional fields here in one place.
         try:
@@ -66,6 +74,8 @@ class CalComClient:
                 message = None
             raise CalComError(response.status_code, str(message) if message else response.text)
         body = response.json()
+        if envelope:
+            return body
         return body.get("data", body)
 
     async def list_bookings(
@@ -74,19 +84,41 @@ class CalComClient:
         after_start: str | None = None,
         before_end: str | None = None,
         limit: int = 50,
+        max_pages: int = 4,
     ) -> Any:
-        """List bookings. ``status``: upcoming | past | cancelled | unconfirmed | recurring."""
-        return await self._request(
-            "GET",
-            "/bookings",
-            api_version=BOOKINGS_LIST_API_VERSION,
-            params={
-                "status": status,
-                "afterStart": after_start,
-                "beforeEnd": before_end,
-                "limit": limit,
-            },
-        )
+        """List bookings. ``status``: upcoming | past | cancelled | unconfirmed | recurring.
+
+        Follows ``pagination.nextCursor`` for up to ``max_pages`` pages, so a
+        busy calendar isn't silently truncated at the first ``limit`` results.
+        """
+        bookings: list[Any] = []
+        cursor: str | None = None
+        for _ in range(max_pages):
+            body = await self._request(
+                "GET",
+                "/bookings",
+                api_version=BOOKINGS_LIST_API_VERSION,
+                params={
+                    "status": status,
+                    "afterStart": after_start,
+                    "beforeEnd": before_end,
+                    "limit": limit,
+                    "cursor": cursor,
+                },
+                envelope=True,
+            )
+            data = body.get("data", [])
+            bookings.extend(data if isinstance(data, list) else [data])
+            cursor = (body.get("pagination") or {}).get("nextCursor")
+            if not cursor:
+                break
+        else:
+            logger.warning(
+                "list_bookings stopped after %d pages (%d bookings); more pages exist",
+                max_pages,
+                len(bookings),
+            )
+        return bookings
 
     async def create_booking(
         self,

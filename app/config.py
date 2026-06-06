@@ -16,7 +16,8 @@ class Settings(BaseSettings):
     llm_model: str = ""  # empty -> the provider's default (anthropic: claude-opus-4-8)
     anthropic_api_key: str = ""
 
-    timezone: str = "UTC"
+    # Empty -> resolved from the cal.com /me profile at startup, else UTC
+    timezone: str = ""
 
 
 @lru_cache

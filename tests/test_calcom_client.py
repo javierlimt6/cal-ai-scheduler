@@ -35,6 +35,54 @@ async def test_list_bookings_sends_auth_and_version_headers(client):
 
 
 @respx.mock
+async def test_list_bookings_follows_pagination_cursor(client):
+    route = respx.get(f"{BASE}/bookings").mock(
+        side_effect=[
+            httpx.Response(
+                200,
+                json={
+                    "status": "success",
+                    "data": [{"uid": "page1"}],
+                    "pagination": {"nextCursor": "cur2", "hasMore": True},
+                },
+            ),
+            httpx.Response(
+                200,
+                json={
+                    "status": "success",
+                    "data": [{"uid": "page2"}],
+                    "pagination": {"nextCursor": None, "hasMore": False},
+                },
+            ),
+        ]
+    )
+
+    data = await client.list_bookings()
+
+    assert [b["uid"] for b in data] == ["page1", "page2"]
+    assert "cursor" not in str(route.calls[0].request.url)
+    assert "cursor=cur2" in str(route.calls[1].request.url)
+
+
+@respx.mock
+async def test_list_bookings_stops_at_max_pages(client):
+    respx.get(f"{BASE}/bookings").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "status": "success",
+                "data": [{"uid": "x"}],
+                "pagination": {"nextCursor": "always-more", "hasMore": True},
+            },
+        )
+    )
+
+    data = await client.list_bookings(max_pages=2)
+
+    assert len(data) == 2  # bounded, not infinite
+
+
+@respx.mock
 async def test_create_booking_payload_and_version(client):
     route = respx.post(f"{BASE}/bookings").mock(
         return_value=httpx.Response(201, json={"status": "success", "data": {"uid": "new1"}})

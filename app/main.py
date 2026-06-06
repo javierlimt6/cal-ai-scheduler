@@ -9,7 +9,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from app.agent import Agent, build_dispatch, build_system_prompt
-from app.calcom import CalComClient
+from app.calcom import CalComClient, CalComError
 from app.config import get_settings
 from app.llm import LLMProviderError, get_provider
 
@@ -26,12 +26,26 @@ async def lifespan(app: FastAPI):
         logger.warning(
             "CAL_API_KEY is not set — cal.com calls will fail. Copy .env.example to .env."
         )
-    build_system_prompt(settings.timezone)  # fail fast on an invalid TIMEZONE
     calcom = CalComClient(api_key=settings.cal_api_key, base_url=settings.cal_api_base_url)
+
+    # Identity bootstrap: anything not configured explicitly comes from the
+    # authenticated cal.com profile, so a bare CAL_API_KEY is enough to run.
+    username, timezone = settings.cal_username, settings.timezone
+    if settings.cal_api_key and not (username and timezone):
+        try:
+            me = await calcom.get_me()
+            username = username or me.get("username") or ""
+            timezone = timezone or me.get("timeZone") or ""
+            logger.info("Resolved from cal.com /me: username=%r, timezone=%r", username, timezone)
+        except CalComError as exc:
+            logger.warning("Could not resolve profile from cal.com /me: %s", exc)
+    timezone = timezone or "UTC"
+
+    build_system_prompt(timezone)  # fail fast on an invalid TIMEZONE
     app.state.agent = Agent(
         provider=get_provider(settings.llm_provider, settings),
-        dispatch=build_dispatch(calcom, settings.cal_username),
-        system_prompt=lambda: build_system_prompt(settings.timezone),
+        dispatch=build_dispatch(calcom, username),
+        system_prompt=lambda: build_system_prompt(timezone),
     )
     try:
         yield
