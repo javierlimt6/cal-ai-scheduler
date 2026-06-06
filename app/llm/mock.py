@@ -46,7 +46,11 @@ class MockProvider:
         lowered = text.lower()
         iso = ISO_DATETIME.search(text)
         email = EMAIL.search(text)
-        event_type_id = EVENT_TYPE_ID.search(text)
+        # Strip datetimes/emails before extracting ids, so the year in
+        # "2026-06-12T10:00:00Z" or an email local part like "ada123" can't be
+        # mistaken for an event type id or booking uid.
+        plain = EMAIL.sub(" ", ISO_DATETIME.sub(" ", text))
+        event_type_id = EVENT_TYPE_ID.search(plain)
 
         if any(k in lowered for k in ("slot", "availab", "free", "open")):
             if not event_type_id:
@@ -60,13 +64,13 @@ class MockProvider:
             )
 
         if "cancel" in lowered:
-            uid = self._find_uid(text)
+            uid = self._find_uid(plain)
             if not uid:
                 return _call("list_bookings", status="upcoming")
             return _call("cancel_booking", booking_uid=uid, reason="Requested via assistant")
 
         if any(k in lowered for k in ("reschedule", "move", "push")):
-            uid = self._find_uid(text)
+            uid = self._find_uid(plain)
             if uid and iso:
                 return _call("reschedule_booking", booking_uid=uid, new_start=iso.group(0))
             return LLMResponse(
@@ -74,7 +78,7 @@ class MockProvider:
                 "e.g. 'reschedule booking abc12345 to 2026-06-12T10:00:00Z'."
             )
 
-        if "book" in lowered or "schedule a" in lowered or "set up" in lowered:
+        if re.search(r"\bbook\b", lowered) or "schedule a" in lowered or "set up" in lowered:
             if event_type_id and iso and email:
                 return _call(
                     "create_booking",
@@ -113,6 +117,8 @@ class MockProvider:
                 tool_name = message.tool_calls[0].name
                 break
 
+        if not messages[-1].tool_results:
+            return LLMResponse(text=HELP_TEXT)
         result = messages[-1].tool_results[0]
         if result.is_error:
             return LLMResponse(text=f"That didn't work: {result.content}")
@@ -141,12 +147,11 @@ class MockProvider:
             return "Available slots:\n" + "\n".join(lines)
 
         if tool_name == "list_event_types":
-            items = data if isinstance(data, list) else data.get("eventTypes", []) if isinstance(data, dict) else []
-            if not items:
+            if not data:
                 return "You have no event types set up."
             lines = [
-                f"- {e.get('title', e.get('slug', '?'))} (id: {e.get('id', '?')}, {e.get('lengthInMinutes', e.get('length', '?'))} min)"
-                for e in items
+                f"- {e.get('title', '?')} (id: {e.get('id', '?')}, {e.get('lengthInMinutes', '?')} min)"
+                for e in data
             ]
             return "Your event types:\n" + "\n".join(lines)
 

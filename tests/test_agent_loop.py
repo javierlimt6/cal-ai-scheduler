@@ -116,6 +116,43 @@ async def test_missing_details_asks_instead_of_calling_tools(agent):
     assert "event type" in reply.text.lower()
 
 
+async def test_show_my_bookings_lists_instead_of_booking(agent):
+    reply = await agent.chat("s1", "Show my bookings")
+
+    assert [a.name for a in reply.tool_activity] == ["list_bookings"]
+
+
+async def test_datetime_year_is_not_mistaken_for_event_type_id(agent):
+    # No explicit event type id: the 2026 in the timestamp must not be used as one
+    reply = await agent.chat("s1", "Book a meeting at 2026-06-12T10:00:00Z for ada@example.com")
+
+    assert reply.tool_activity == []
+    assert "event type" in reply.text.lower()
+
+
+async def test_email_local_part_is_not_mistaken_for_uid(agent, fake):
+    reply = await agent.chat("s1", "Cancel the booking with ada12345@example.com")
+
+    # Must not cancel using "ada12345"; with no uid found it lists bookings instead
+    assert fake.cancelled == []
+    assert [a.name for a in reply.tool_activity] == ["list_bookings"]
+
+
+async def test_concurrent_same_session_turns_do_not_interleave(agent):
+    import asyncio
+
+    await asyncio.gather(
+        agent.chat("s1", "What's on my calendar?"),
+        agent.chat("s1", "What event types do I have?"),
+    )
+
+    history = agent._sessions["s1"]
+    # Two complete turns of 4 messages each, in order: each user message is
+    # followed by its own assistant/tool/assistant block
+    assert len(history) == 8
+    assert [m.role for m in history] == ["user", "assistant", "tool", "assistant"] * 2
+
+
 async def test_runaway_tool_loop_is_capped(fake):
     class AlwaysToolProvider:
         async def complete(self, system, messages, tools):

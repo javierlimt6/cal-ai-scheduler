@@ -57,6 +57,13 @@ TOOLS = [
                     "type": "string",
                     "description": "IANA timezone for the returned slots, e.g. America/New_York.",
                 },
+                "duration": {
+                    "type": "integer",
+                    "description": (
+                        "Slot length in minutes. Only for event types with multiple allowed "
+                        "durations — pass the same value you'll use for length_in_minutes."
+                    ),
+                },
             },
             "required": ["event_type_id", "start", "end"],
         },
@@ -124,7 +131,8 @@ def build_dispatch(client: CalComClient, username: str) -> dict[str, ToolFunc]:
     """Map tool names to CalComClient calls. Each returns JSON-serializable data."""
     return {
         "list_bookings": client.list_bookings,
-        "list_event_types": lambda: client.list_event_types(username),
+        # Tolerate stray kwargs from an LLM (the schema declares none)
+        "list_event_types": lambda **_: client.list_event_types(username),
         "get_available_slots": client.get_slots,
         "create_booking": client.create_booking,
         "cancel_booking": client.cancel_booking,

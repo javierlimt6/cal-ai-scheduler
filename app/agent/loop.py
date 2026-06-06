@@ -47,10 +47,19 @@ class Agent:
         # stay fresh so relative dates ("tomorrow") resolve correctly.
         self._system_prompt = system_prompt
         self._sessions: dict[str, list[Message]] = {}
+        self._locks: dict[str, asyncio.Lock] = {}
 
     async def chat(self, session_id: str, user_message: str) -> AgentReply:
+        # Serialize turns within a session so concurrent requests can't
+        # interleave their messages into the shared history.
+        async with self._locks.setdefault(session_id, asyncio.Lock()):
+            return await self._chat(session_id, user_message)
+
+    async def _chat(self, session_id: str, user_message: str) -> AgentReply:
         if session_id not in self._sessions and len(self._sessions) >= MAX_SESSIONS:
-            self._sessions.pop(next(iter(self._sessions)))
+            evicted = next(iter(self._sessions))
+            self._sessions.pop(evicted)
+            self._locks.pop(evicted, None)
         history = self._sessions.setdefault(session_id, [])
         self._trim(history)
         history.append(Message(role="user", content=user_message))
