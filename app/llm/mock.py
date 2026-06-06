@@ -30,7 +30,9 @@ HELP_TEXT = (
 
 
 def _call(name: str, **arguments) -> LLMResponse:
-    return LLMResponse(tool_calls=[ToolCall(id=f"mock_{uuid.uuid4().hex[:8]}", name=name, arguments=arguments)])
+    return LLMResponse(
+        tool_calls=[ToolCall(id=f"mock_{uuid.uuid4().hex[:8]}", name=name, arguments=arguments)]
+    )
 
 
 class MockProvider:
@@ -54,7 +56,9 @@ class MockProvider:
 
         if any(k in lowered for k in ("slot", "availab", "free", "open")):
             if not event_type_id:
-                return LLMResponse(text="Which event type? Tell me its numeric ID (ask me to list your event types if unsure).")
+                return LLMResponse(
+                    text="Which event type? Tell me its numeric ID (ask me to list your event types if unsure)."
+                )
             now = datetime.now(UTC)
             return _call(
                 "get_available_slots",
@@ -96,7 +100,18 @@ class MockProvider:
         if "event type" in lowered:
             return _call("list_event_types")
 
-        if any(k in lowered for k in ("calendar", "upcoming", "what's on", "whats on", "meetings", "bookings", "schedule")):
+        if any(
+            k in lowered
+            for k in (
+                "calendar",
+                "upcoming",
+                "what's on",
+                "whats on",
+                "meetings",
+                "bookings",
+                "schedule",
+            )
+        ):
             return _call("list_bookings", status="upcoming")
 
         return LLMResponse(text=HELP_TEXT)
@@ -143,7 +158,10 @@ class MockProvider:
         if tool_name == "get_available_slots":
             if not data:
                 return "No open slots in that window."
-            lines = [f"- {day}: " + ", ".join(s.get("start", "?") for s in slots) for day, slots in data.items()]
+            lines = [
+                f"- {day}: " + ", ".join(s.get("start", "?") for s in slots)
+                for day, slots in data.items()
+            ]
             return "Available slots:\n" + "\n".join(lines)
 
         if tool_name == "list_event_types":
@@ -165,6 +183,8 @@ class MockProvider:
             return "Done — the booking has been cancelled."
 
         if tool_name == "reschedule_booking":
-            return f"Rescheduled — new time is {data.get('start', '?')} (uid: {data.get('uid', '?')})."
+            return (
+                f"Rescheduled — new time is {data.get('start', '?')} (uid: {data.get('uid', '?')})."
+            )
 
         return f"Result from {tool_name}: {json.dumps(data, indent=2)[:1500]}"

@@ -67,7 +67,12 @@ async def chat(request: ChatRequest) -> ChatResponse:
     try:
         reply = await app.state.agent.chat(request.session_id, request.message)
     except Exception as exc:  # last-resort guard so the UI always gets JSON
-        raise HTTPException(status_code=500, detail="Something went wrong handling that message.") from exc
+        # HTTPException is handled (not propagated), so log the root cause here
+        # or it vanishes entirely.
+        logger.exception("Unhandled error in /api/chat")
+        raise HTTPException(
+            status_code=500, detail="Something went wrong handling that message."
+        ) from exc
     return ChatResponse(
         reply=reply.text,
         tool_activity=[ToolActivityOut(name=a.name, ok=a.ok) for a in reply.tool_activity],

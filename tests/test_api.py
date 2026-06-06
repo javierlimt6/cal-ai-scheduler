@@ -35,7 +35,9 @@ async def test_chat_round_trip_via_mock_provider(api_client):
             200,
             json={
                 "status": "success",
-                "data": [{"uid": "abc123def", "title": "Intro call", "start": "2026-06-11T14:00:00Z"}],
+                "data": [
+                    {"uid": "abc123def", "title": "Intro call", "start": "2026-06-11T14:00:00Z"}
+                ],
             },
         )
     )

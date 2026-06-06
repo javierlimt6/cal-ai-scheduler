@@ -32,6 +32,4 @@ otherwise ask first.
 
 def build_system_prompt(timezone: str) -> str:
     now = datetime.now(UTC).astimezone(ZoneInfo(timezone))
-    return SYSTEM_PROMPT_TEMPLATE.format(
-        now=now.strftime("%A, %B %d %Y, %H:%M"), timezone=timezone
-    )
+    return SYSTEM_PROMPT_TEMPLATE.format(now=now.strftime("%A, %B %d %Y, %H:%M"), timezone=timezone)

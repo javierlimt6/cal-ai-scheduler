@@ -23,7 +23,9 @@ class FakeCalCom:
     async def get_slots(self, event_type_id, start, end, time_zone=None):
         return {"2026-06-11": [{"start": "2026-06-11T15:00:00Z"}]}
 
-    async def create_booking(self, event_type_id, start, attendee_name, attendee_email, time_zone, **kwargs):
+    async def create_booking(
+        self, event_type_id, start, attendee_name, attendee_email, time_zone, **kwargs
+    ):
         booking = {"uid": "new42uid", "title": "30-min intro", "start": start}
         self.bookings.append(booking)
         return booking
@@ -160,7 +162,9 @@ def test_trim_caps_history_and_realigns_to_user_turn():
     # Build an over-long history of repeating 4-message turns
     turn = [
         Message(role="user", content="u"),
-        Message(role="assistant", content="", tool_calls=[ToolCall(id="x", name="t", arguments={})]),
+        Message(
+            role="assistant", content="", tool_calls=[ToolCall(id="x", name="t", arguments={})]
+        ),
         Message(role="tool"),
         Message(role="assistant", content="a"),
     ]
@@ -188,9 +192,7 @@ async def test_lru_session_eviction_keeps_active_sessions(agent, monkeypatch):
 async def test_runaway_tool_loop_is_capped(fake):
     class AlwaysToolProvider:
         async def complete(self, system, messages, tools):
-            return LLMResponse(
-                tool_calls=[ToolCall(id="x", name="list_bookings", arguments={})]
-            )
+            return LLMResponse(tool_calls=[ToolCall(id="x", name="list_bookings", arguments={})])
 
     dispatch = {"list_bookings": fake.list_bookings}
     agent = Agent(AlwaysToolProvider(), dispatch, lambda: "system")

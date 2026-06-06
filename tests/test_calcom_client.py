@@ -29,6 +29,7 @@ async def test_list_bookings_sends_auth_and_version_headers(client):
     assert request.headers["Authorization"] == "Bearer cal_test_key"
     assert request.headers["cal-api-version"] == "2026-05-01"
     assert "status=upcoming" in str(request.url)
+    assert "limit=50" in str(request.url)  # cal.com 2026-05-01 paginates via limit/cursor
     # None params must be omitted
     assert "afterStart" not in str(request.url)
 
@@ -67,7 +68,9 @@ async def test_create_booking_payload_and_version(client):
 @respx.mock
 async def test_cancel_booking(client):
     route = respx.post(f"{BASE}/bookings/uid123/cancel").mock(
-        return_value=httpx.Response(200, json={"status": "success", "data": {"status": "cancelled"}})
+        return_value=httpx.Response(
+            200, json={"status": "success", "data": {"status": "cancelled"}}
+        )
     )
 
     data = await client.cancel_booking("uid123", reason="Conflict")

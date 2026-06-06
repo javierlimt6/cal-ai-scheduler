@@ -81,11 +81,9 @@ class Agent:
                 Message(role="assistant", content=response.text, tool_calls=response.tool_calls)
             )
 
-            outcomes = await asyncio.gather(
-                *(self._run_tool(call) for call in response.tool_calls)
-            )
+            outcomes = await asyncio.gather(*(self._run_tool(call) for call in response.tool_calls))
             results = []
-            for call, (content, ok) in zip(response.tool_calls, outcomes):
+            for call, (content, ok) in zip(response.tool_calls, outcomes, strict=True):
                 results.append(ToolResult(tool_call_id=call.id, content=content, is_error=not ok))
                 activity.append(ToolActivity(name=call.name, arguments=call.arguments, ok=ok))
 

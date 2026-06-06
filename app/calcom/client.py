@@ -84,7 +84,7 @@ class CalComClient:
                 "status": status,
                 "afterStart": after_start,
                 "beforeEnd": before_end,
-                "take": limit,
+                "limit": limit,
             },
         )
 
