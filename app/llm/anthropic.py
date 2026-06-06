@@ -35,14 +35,18 @@ class AnthropicProvider:
     async def complete(
         self, system: str, messages: list[Message], tools: list[ToolDef]
     ) -> LLMResponse:
+        # Typed as Any at the SDK boundary: we build plain wire-shape dicts
+        # (pinned by unit tests) rather than mirroring the SDK's TypedDict tree.
+        api_tools: Any = [to_anthropic_tool(tool) for tool in tools]
+        api_messages: Any = to_anthropic_messages(messages)
         try:
             response = await self._client.messages.create(
                 model=self._model,
                 max_tokens=MAX_TOKENS,
                 system=system,
                 thinking={"type": "adaptive"},
-                tools=[to_anthropic_tool(tool) for tool in tools],
-                messages=to_anthropic_messages(messages),
+                tools=api_tools,
+                messages=api_messages,
             )
         except anthropic.APIStatusError as exc:
             raise LLMProviderError(_describe_status_error(exc)) from exc

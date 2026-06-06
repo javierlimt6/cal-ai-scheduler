@@ -1,11 +1,57 @@
-"""Tool schemas exposed to the LLM and their dispatch onto CalComClient."""
+"""Tool schemas exposed to the LLM and their dispatch onto the calendar client."""
 
 import json
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import Any, Protocol
 
-from app.calcom import CalComClient
 from app.llm import ToolDef
+
+
+class SchedulingClient(Protocol):
+    """What the tool layer needs from a calendar backend.
+
+    ``CalComClient`` satisfies this structurally; tests satisfy it with an
+    in-memory fake. Keeping the dependency structural means the agent package
+    never imports the concrete HTTP client.
+    """
+
+    async def list_bookings(
+        self,
+        status: str | None = None,
+        after_start: str | None = None,
+        before_end: str | None = None,
+        limit: int = 50,
+        max_pages: int = 4,
+    ) -> Any: ...
+
+    async def list_event_types(self, username: str) -> Any: ...
+
+    async def get_slots(
+        self,
+        start: str,
+        end: str,
+        event_type_id: int | None = None,
+        time_zone: str | None = None,
+        duration: int | None = None,
+    ) -> Any: ...
+
+    async def create_booking(
+        self,
+        event_type_id: int,
+        start: str,
+        attendee_name: str,
+        attendee_email: str,
+        time_zone: str,
+        length_in_minutes: int | None = None,
+        guests: list[str] | None = None,
+    ) -> Any: ...
+
+    async def cancel_booking(self, booking_uid: str, reason: str | None = None) -> Any: ...
+
+    async def reschedule_booking(
+        self, booking_uid: str, new_start: str, reason: str | None = None
+    ) -> Any: ...
+
 
 TOOLS = [
     ToolDef(
@@ -127,8 +173,8 @@ TOOLS = [
 ToolFunc = Callable[..., Awaitable[Any]]
 
 
-def build_dispatch(client: CalComClient, username: str) -> dict[str, ToolFunc]:
-    """Map tool names to CalComClient calls. Each returns JSON-serializable data."""
+def build_dispatch(client: SchedulingClient, username: str) -> dict[str, ToolFunc]:
+    """Map tool names to client calls. Each returns JSON-serializable data."""
     return {
         "list_bookings": client.list_bookings,
         # Tolerate stray kwargs from an LLM (the schema declares none)
