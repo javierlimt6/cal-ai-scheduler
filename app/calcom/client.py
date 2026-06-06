@@ -14,6 +14,7 @@ import httpx
 logger = logging.getLogger(__name__)
 
 BOOKINGS_LIST_API_VERSION = "2026-05-01"
+BOOKING_GET_API_VERSION = "2026-02-25"
 BOOKINGS_WRITE_API_VERSION = "2026-02-25"
 SLOTS_API_VERSION = "2024-09-04"
 EVENT_TYPES_API_VERSION = "2024-06-14"
@@ -144,6 +145,14 @@ class CalComClient:
                 },
                 "lengthInMinutes": length_in_minutes,
             },
+        )
+
+    async def get_booking(self, booking_uid: str) -> Any:
+        """One booking by uid: title, start/end, attendees, guests, location, ..."""
+        return await self._request(
+            "GET",
+            f"/bookings/{quote(booking_uid, safe='')}",
+            api_version=BOOKING_GET_API_VERSION,
         )
 
     async def cancel_booking(self, booking_uid: str, reason: str | None = None) -> Any:

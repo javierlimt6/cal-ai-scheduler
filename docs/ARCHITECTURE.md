@@ -133,13 +133,19 @@ What happens when the user types *"What's on my calendar?"*:
    - HTTP error responses → `CalComError(status, message)` (tolerates both `{"error": {...}}`
      and `{"error": "string"}` bodies),
    - transport failures (DNS, refused, protocol) → `CalComError(503, "Could not reach cal.com…")`.
-8. **Response out** (`main.py`): `AgentReply` is projected onto wire DTOs — `reply`,
-   `tool_activity` as `[{name, ok}]` (tool arguments never leave the server), and
-   `pending_action` as `{id, summary}` when a confirmation is outstanding. Error guards keep the
-   UI in JSON: `LLMProviderError` → 502 with the adapter's friendly message, anything else → 500.
-9. **Browser** renders friendly tool chips ("✓ checked your calendar"), the assistant bubble
-   through the safe mini-markdown renderer, and — when `pending_action` is set — a
-   Confirm/Decline card.
+8. **Response out** (`main.py`): `/api/chat` is a **Server-Sent Events stream**. The agent turn
+   runs as a background task feeding an `asyncio.Queue`; the response generator drains it. Wire
+   protocol — any number of progress events, then exactly one terminal event:
+   - `thinking {delta}` / `text {delta}` — model reasoning and reply prose as they generate
+   - `tool {name, ok}` — each tool the moment it completes (`pending: true` for a held action)
+   - `done {reply, tool_activity, pending_action}` — the full ChatResponse payload
+   - `error {detail, status}` — friendly failure (502 provider / 500 other), still as an event
+   The task holds a strong ref and outlives a client disconnect so session history is always
+   completed consistently. Tool arguments never leave the server.
+9. **Browser** renders the stream live: a collapsible "thinking" block, text accumulating into
+   the assistant bubble (swapped for the markdown-rendered version at `done`), tool chips as
+   they finish, and — when `pending_action` arrives — a Confirm/Decline card showing the real
+   booking's details.
 
 **The confirm leg** (when the user clicks a card): `POST /api/chat/confirm` →
 `Agent.resolve_pending(session_id, action_id, approved)` under the same per-session lock. The id
@@ -195,14 +201,21 @@ Per-session `asyncio.Lock` serializes turns within a session (no interleaved his
 sessions are fully concurrent, as are tool calls within one turn.
 
 **The confirmation gate** lives here too. `DESTRUCTIVE_TOOLS` calls short-circuit in `_run_tool`:
-instead of executing, the call is frozen as the session's single `PendingAction` (uuid id, the
-exact `ToolCall`, a human summary built by `_describe_action`). The LLM gets a
-`CONFIRMATION_REQUIRED` tool result; the browser gets `{id, summary}`. `resolve_pending` is the
-only executor: it id-checks, consumes the action (one-shot), runs the frozen call on approval,
-and writes a server-authored exchange into history so the next turn is coherent. Pending actions
-die with any new user message and with session eviction. Security property: between "model wants
-to cancel" and "cancellation happens" there is always a human click on arguments that cannot have
-changed since the model proposed them.
+instead of executing, the call is frozen as the session's single `PendingAction` — the slot is
+reserved *synchronously* (atomic in asyncio) before any await, then the card is enriched
+best-effort via `booking_lookup` (`GET /bookings/{uid}`) into a multi-line summary: title,
+attendees, guests, localized old→new times, location. Lookup failure degrades to the uid-based
+line. The LLM gets a `CONFIRMATION_REQUIRED` tool result; the browser gets `{id, summary}`.
+`resolve_pending` is the only executor: it id-checks, consumes the action (one-shot), runs the
+frozen call on approval, and writes a server-authored exchange into history so the next turn is
+coherent. Pending actions die with any new user message and with session eviction. Security
+property: between "model wants to cancel" and "cancellation happens" there is always a human
+click on arguments that cannot have changed since the model proposed them.
+
+**Streaming** (`AgentEventHandler`): `chat()` takes an optional async callback and forwards the
+provider's `StreamEvent`s (`thinking`/`text` deltas) plus a `tool` event as each call completes
+(`pending: true` when gated). Purely presentational — the returned `AgentReply` is unchanged and
+callers that pass nothing get the old behavior.
 
 **`tools.py`** declares the `SchedulingClient` protocol (the structural contract a calendar
 backend must satisfy — `CalComClient` in production, an in-memory fake in tests, so the agent
@@ -249,15 +262,20 @@ to a response and get back verbatim on the assistant message (the loop copies it
 it). Anthropic needs this to replay thinking blocks mid tool-turn; other providers ignore it.
 
 **`anthropic.py`** (`AnthropicProvider`) is the production adapter — and the only module allowed
-to import the `anthropic` SDK. `claude-opus-4-8` by default (`LLM_MODEL` overrides), adaptive
-thinking, 16k `max_tokens`, 60s timeout (SDK retries 429/5xx twice on its own). Translation is
-three pure, unit-tested functions: `to_anthropic_tool` (ToolDef → tool param),
-`to_anthropic_messages` (history → API messages: tool results become `tool_result` blocks in a
-user turn; assistant turns replay `raw` blocks verbatim when present; empty text blocks are never
-emitted), and `from_anthropic_response` (content blocks → text + ToolCalls + raw, with fallbacks
-for empty/refusal responses). SDK exceptions become `LLMProviderError` with messages written for
-end users ("Anthropic rejected the API key — check ANTHROPIC_API_KEY…"), which `main.py` maps to
-502.
+to import the `anthropic` SDK. `claude-opus-4-8` by default (`LLM_MODEL` overrides; the demo
+`.env` runs `claude-haiku-4-5`), 16k `max_tokens`, 60s timeout (SDK retries 429/5xx twice on its
+own). **Thinking is capability-aware**: resolved once per process via the Models API
+(`models.retrieve(...).capabilities`) — adaptive + `display: "summarized"` (so reasoning text
+streams) where supported, omitted entirely where not (Haiku 4.5); lookup failure assumes modern.
+With an `on_event` handler, `complete()` uses `messages.stream()` and forwards
+`thinking_delta`/`text_delta` fragments as neutral `StreamEvent`s, then builds the result from
+`get_final_message()` — identical translation either way. Translation is three pure, unit-tested
+functions: `to_anthropic_tool` (ToolDef → tool param), `to_anthropic_messages` (history → API
+messages: tool results become `tool_result` blocks in a user turn; assistant turns replay `raw`
+blocks verbatim when present; empty text blocks are never emitted), and `from_anthropic_response`
+(content blocks → text + ToolCalls + raw, with fallbacks for empty/refusal responses). SDK
+exceptions become `LLMProviderError` with messages written for end users, which `main.py` maps
+to 502.
 
 **`mock.py`** (`MockProvider`) makes the whole stack run deterministically with **no LLM key**:
 
@@ -301,6 +319,7 @@ A deliberately thin async client. The non-obvious parts, all verified against ca
 | Method | Endpoint |
 |---|---|
 | `list_bookings(status, after_start, before_end, limit, max_pages)` | `GET /bookings` (follows cursor) |
+| `get_booking(uid)` | `GET /bookings/{uid}` (confirmation-card details) |
 | `create_booking(event_type_id, start, attendee_*, time_zone, …)` | `POST /bookings` |
 | `cancel_booking(uid, reason)` | `POST /bookings/{uid}/cancel` |
 | `reschedule_booking(uid, new_start, reason)` | `POST /bookings/{uid}/reschedule` |
@@ -344,8 +363,9 @@ Run: `uv run pytest` (or `-k name` / a file path for a subset). CI
   `SchedulingClient` method + client method if it's a new endpoint). Add it to
   `DESTRUCTIVE_TOOLS` if it mutates anything irreversible — the gate, card UI, and tests pick it
   up automatically.
-- **Streaming replies**: swap `/api/chat` to SSE and append deltas in the UI; the agent loop's
-  seam (`complete()`) is where a `stream()` variant would slot in.
+- **Another stream consumer**: the SSE protocol in §3 step 8 is plain enough for any client —
+  a CLI, a Slack bridge — to drive `/api/chat` and render progress; `AgentEventHandler` is the
+  in-process seam if a consumer wants events without HTTP.
 - **Persistence / multi-process**: `Agent._sessions` is a dict by design (demo scope). The seam
   is narrow — replace the dict with a store keyed the same way and keep the lock per worker; the
   rate limiter moves to the same store.

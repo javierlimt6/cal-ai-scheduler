@@ -14,13 +14,24 @@ from typing import Any
 
 import anthropic
 
-from app.llm.base import LLMProviderError, LLMResponse, Message, ToolCall, ToolDef
+from app.llm.base import (
+    LLMProviderError,
+    LLMResponse,
+    Message,
+    StreamEvent,
+    StreamHandler,
+    ToolCall,
+    ToolDef,
+)
 
 DEFAULT_MODEL = "claude-opus-4-8"
 # Generous ceiling: replies are chat-sized, but adaptive thinking tokens
 # count against the same cap and truncation surfaces as a broken answer.
 MAX_TOKENS = 16000
 REQUEST_TIMEOUT_SECONDS = 60.0  # chat UI: fail fast rather than hang (SDK default is 10 min)
+
+
+_UNRESOLVED = object()
 
 
 class AnthropicProvider:
@@ -31,23 +42,56 @@ class AnthropicProvider:
             )
         self._client = anthropic.AsyncAnthropic(api_key=api_key, timeout=REQUEST_TIMEOUT_SECONDS)
         self._model = model or DEFAULT_MODEL
+        self._thinking: Any = _UNRESOLVED  # resolved per model on first call
+
+    async def _thinking_config(self) -> dict[str, str] | None:
+        """Adaptive thinking where the model supports it, omitted where it
+        doesn't (e.g. Haiku 4.5). Resolved once via the Models API and cached;
+        display=summarized because we stream the reasoning to the UI."""
+        if self._thinking is _UNRESOLVED:
+            try:
+                model = await self._client.models.retrieve(self._model)
+                caps: dict[str, Any] = model.capabilities.to_dict() if model.capabilities else {}
+                supported = bool(caps["thinking"]["types"]["adaptive"]["supported"])
+            except Exception:  # capability lookup is best-effort; assume modern
+                supported = True
+            self._thinking = {"type": "adaptive", "display": "summarized"} if supported else None
+        return self._thinking
 
     async def complete(
-        self, system: str, messages: list[Message], tools: list[ToolDef]
+        self,
+        system: str,
+        messages: list[Message],
+        tools: list[ToolDef],
+        on_event: StreamHandler | None = None,
     ) -> LLMResponse:
         # Typed as Any at the SDK boundary: we build plain wire-shape dicts
         # (pinned by unit tests) rather than mirroring the SDK's TypedDict tree.
         api_tools: Any = [to_anthropic_tool(tool) for tool in tools]
         api_messages: Any = to_anthropic_messages(messages)
+        kwargs: dict[str, Any] = dict(
+            model=self._model,
+            max_tokens=MAX_TOKENS,
+            system=system,
+            tools=api_tools,
+            messages=api_messages,
+        )
+        thinking = await self._thinking_config()
+        if thinking is not None:
+            kwargs["thinking"] = thinking
         try:
-            response = await self._client.messages.create(
-                model=self._model,
-                max_tokens=MAX_TOKENS,
-                system=system,
-                thinking={"type": "adaptive"},
-                tools=api_tools,
-                messages=api_messages,
-            )
+            if on_event is None:
+                response = await self._client.messages.create(**kwargs)
+            else:
+                async with self._client.messages.stream(**kwargs) as stream:
+                    async for event in stream:
+                        if event.type != "content_block_delta":
+                            continue
+                        if event.delta.type == "thinking_delta" and event.delta.thinking:
+                            await on_event(StreamEvent("thinking", event.delta.thinking))
+                        elif event.delta.type == "text_delta" and event.delta.text:
+                            await on_event(StreamEvent("text", event.delta.text))
+                    response = await stream.get_final_message()
         except anthropic.APIStatusError as exc:
             raise LLMProviderError(_describe_status_error(exc)) from exc
         except anthropic.APIConnectionError as exc:

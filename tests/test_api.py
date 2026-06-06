@@ -1,3 +1,5 @@
+import json
+
 import httpx
 import pytest
 import respx
@@ -5,6 +7,24 @@ import respx
 from app.main import app
 
 CAL_BASE = "https://api.cal.com/v2"
+
+
+def _sse_events(body: str) -> list[tuple[str, dict]]:
+    """Parse an SSE body into (event, data) pairs."""
+    events = []
+    for frame in body.strip().split("\n\n"):
+        name, data = "", {}
+        for line in frame.split("\n"):
+            if line.startswith("event: "):
+                name = line[len("event: ") :]
+            elif line.startswith("data: "):
+                data = json.loads(line[len("data: ") :])
+        events.append((name, data))
+    return events
+
+
+def _done(body: str) -> dict:
+    return next(data for name, data in _sse_events(body) if name == "done")
 
 
 @pytest.fixture
@@ -47,9 +67,12 @@ async def test_chat_round_trip_via_mock_provider(api_client):
     )
 
     assert response.status_code == 200
-    body = response.json()
-    assert "Intro call" in body["reply"]
-    assert body["tool_activity"] == [{"name": "list_bookings", "ok": True}]
+    assert response.headers["content-type"].startswith("text/event-stream")
+    names = [name for name, _ in _sse_events(response.text)]
+    assert "tool" in names and "text" in names  # progress streamed before the result
+    done = _done(response.text)
+    assert "Intro call" in done["reply"]
+    assert done["tool_activity"] == [{"name": "list_bookings", "ok": True}]
 
 
 async def test_chat_validates_input(api_client):
@@ -78,6 +101,20 @@ async def test_explicit_invalid_timezone_fails_startup(monkeypatch):
 
 @respx.mock
 async def test_destructive_action_needs_explicit_confirmation(api_client):
+    respx.get(f"{CAL_BASE}/bookings/abc123def").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "status": "success",
+                "data": {
+                    "uid": "abc123def",
+                    "title": "Intro call",
+                    "start": "2026-06-11T14:00:00Z",
+                    "attendees": [{"name": "Ada", "email": "ada@example.com"}],
+                },
+            },
+        )
+    )
     cancel_route = respx.post(f"{CAL_BASE}/bookings/abc123def/cancel").mock(
         return_value=httpx.Response(
             200, json={"status": "success", "data": {"status": "cancelled"}}
@@ -89,10 +126,12 @@ async def test_destructive_action_needs_explicit_confirmation(api_client):
     )
 
     assert first.status_code == 200
-    body = first.json()
+    body = _done(first.text)
     assert body["tool_activity"] == []  # nothing executed yet
     pending = body["pending_action"]
-    assert pending is not None and "abc123def" in pending["summary"]
+    assert pending is not None
+    assert 'Cancel "Intro call"' in pending["summary"]  # card shows details, not a uid
+    assert "Ada (ada@example.com)" in pending["summary"]
     assert not cancel_route.called
 
     second = await api_client.post(

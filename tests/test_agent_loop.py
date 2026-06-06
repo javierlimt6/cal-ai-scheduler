@@ -38,6 +38,19 @@ class FakeCalCom:
     async def reschedule_booking(self, booking_uid, new_start, reason=None):
         return {"uid": booking_uid + "x", "start": new_start}
 
+    async def get_booking(self, booking_uid):
+        for booking in self.bookings:
+            if booking["uid"] == booking_uid:
+                return {
+                    **booking,
+                    "end": "2026-06-11T14:30:00Z",
+                    "duration": 30,
+                    "attendees": [{"name": "Ada Lovelace", "email": "ada@example.com"}],
+                    "guests": ["guest@example.com"],
+                    "location": "https://meet.example.com/intro",
+                }
+        raise CalComError(404, "Booking not found")
+
 
 @pytest.fixture
 def fake():
@@ -47,7 +60,13 @@ def fake():
 @pytest.fixture
 def agent(fake):
     dispatch = build_dispatch(fake, "testuser")
-    return Agent(MockProvider(), dispatch, lambda: build_system_prompt("UTC"))
+    return Agent(
+        MockProvider(),
+        dispatch,
+        lambda: build_system_prompt("UTC"),
+        booking_lookup=fake.get_booking,
+        timezone="UTC",
+    )
 
 
 async def test_view_calendar(agent):
@@ -75,7 +94,13 @@ async def test_cancel_is_gated_then_executes_on_confirm(agent, fake):
     assert fake.cancelled == []  # nothing ran off the LLM's say-so
     assert reply.tool_activity == []
     assert reply.pending_action is not None
-    assert "abc123def" in reply.pending_action.summary
+    # The card shows real booking details, not a bare uid
+    summary = reply.pending_action.summary
+    assert 'Cancel "Intro call"' in summary
+    assert "Ada Lovelace (ada@example.com)" in summary
+    assert "Guests: guest@example.com" in summary
+    assert "Thu 11 Jun 2026, 14:00 (UTC) · 30 min" in summary
+    assert "Location: https://meet.example.com/intro" in summary
     assert "Confirm" in reply.text  # the user is pointed at the card
 
     done = await agent.resolve_pending("s1", reply.pending_action.id, approved=True)
@@ -100,10 +125,45 @@ async def test_reschedule_is_gated_then_executes_on_confirm(agent):
     reply = await agent.chat("s1", "Reschedule booking abc123def to 2026-06-12T10:00:00Z")
 
     assert reply.pending_action is not None
+    # Old and new times, localized, on the card
+    assert "From Thu 11 Jun 2026, 14:00 (UTC)" in reply.pending_action.summary
+    assert "To Fri 12 Jun 2026, 10:00 (UTC)" in reply.pending_action.summary
 
     done = await agent.resolve_pending("s1", reply.pending_action.id, approved=True)
 
     assert "2026-06-12T10:00:00Z" in done.text
+
+
+async def test_card_falls_back_to_uid_without_booking_lookup(fake):
+    agent = Agent(MockProvider(), build_dispatch(fake, "u"), lambda: "system")
+
+    reply = await agent.chat("s1", "Cancel booking abc123def")
+
+    assert reply.pending_action.summary.startswith("Cancel booking abc123def")
+
+
+async def test_chat_streams_tool_and_text_events(agent):
+    events: list[dict] = []
+
+    async def collect(event):
+        events.append(event)
+
+    reply = await agent.chat("s1", "What's on my calendar?", collect)
+
+    assert events[0] == {"type": "tool", "name": "list_bookings", "ok": True}
+    assert events[1]["type"] == "text"
+    assert events[1]["delta"] == reply.text
+
+
+async def test_gated_tool_streams_a_pending_event(agent):
+    events: list[dict] = []
+
+    async def collect(event):
+        events.append(event)
+
+    await agent.chat("s1", "Cancel booking abc123def", collect)
+
+    assert {"type": "tool", "name": "cancel_booking", "ok": True, "pending": True} in events
 
 
 async def test_confirmed_outcome_tolerates_non_dict_tool_results(agent, fake):
@@ -137,7 +197,7 @@ async def test_second_destructive_call_in_one_turn_is_rejected(fake):
         def __init__(self):
             self.turn = 0
 
-        async def complete(self, system, messages, tools):
+        async def complete(self, system, messages, tools, on_event=None):
             self.turn += 1
             if self.turn == 1:
                 return LLMResponse(
@@ -328,7 +388,7 @@ async def test_provider_raw_payload_rides_along_on_assistant_messages(fake):
         def __init__(self):
             self.turn = 0
 
-        async def complete(self, system, messages, tools):
+        async def complete(self, system, messages, tools, on_event=None):
             self.turn += 1
             if self.turn == 1:
                 return LLMResponse(
@@ -348,7 +408,7 @@ async def test_provider_raw_payload_rides_along_on_assistant_messages(fake):
 
 async def test_runaway_tool_loop_is_capped(fake):
     class AlwaysToolProvider:
-        async def complete(self, system, messages, tools):
+        async def complete(self, system, messages, tools, on_event=None):
             return LLMResponse(tool_calls=[ToolCall(id="x", name="list_bookings", arguments={})])
 
     dispatch = {"list_bookings": fake.list_bookings}

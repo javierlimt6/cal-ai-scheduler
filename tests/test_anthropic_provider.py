@@ -36,6 +36,19 @@ def _status_error(cls, status_code):
     return cls("boom", response=response, body=None)
 
 
+def _provider(adaptive_supported=True, capability_lookup_fails=False):
+    """AnthropicProvider with the Models API capability lookup stubbed out."""
+    provider = AnthropicProvider(api_key="test-key")
+    if capability_lookup_fails:
+        provider._client.models.retrieve = AsyncMock(side_effect=RuntimeError("offline"))
+    else:
+        caps = {"thinking": {"types": {"adaptive": {"supported": adaptive_supported}}}}
+        provider._client.models.retrieve = AsyncMock(
+            return_value=SimpleNamespace(capabilities=SimpleNamespace(to_dict=lambda: caps))
+        )
+    return provider
+
+
 # --- request mapping -------------------------------------------------------
 
 
@@ -150,7 +163,7 @@ def test_refusal_gets_refusal_text():
 
 
 async def test_complete_sends_model_thinking_and_mapped_payload():
-    provider = AnthropicProvider(api_key="test-key")
+    provider = _provider()
     create = AsyncMock(
         return_value=SimpleNamespace(
             content=[SimpleNamespace(type="text", text="hello")], stop_reason="end_turn"
@@ -168,9 +181,89 @@ async def test_complete_sends_model_thinking_and_mapped_payload():
     kwargs = create.call_args.kwargs
     assert kwargs["model"] == DEFAULT_MODEL
     assert kwargs["system"] == "SYSTEM"
-    assert kwargs["thinking"] == {"type": "adaptive"}
+    assert kwargs["thinking"] == {"type": "adaptive", "display": "summarized"}
     assert kwargs["tools"][0]["input_schema"] == {"type": "object"}
     assert kwargs["messages"] == [{"role": "user", "content": "hi"}]
+
+
+async def test_thinking_omitted_for_models_without_adaptive_support():
+    provider = _provider(adaptive_supported=False)  # e.g. claude-haiku-4-5
+    create = AsyncMock(
+        return_value=SimpleNamespace(content=[SimpleNamespace(type="text", text="ok")])
+    )
+    provider._client.messages.create = create
+
+    await provider.complete("s", [Message(role="user", content="hi")], [])
+    await provider.complete("s", [Message(role="user", content="again")], [])
+
+    assert "thinking" not in create.call_args.kwargs
+    assert provider._client.models.retrieve.await_count == 1  # capability cached
+
+
+async def test_capability_lookup_failure_assumes_adaptive():
+    provider = _provider(capability_lookup_fails=True)
+    create = AsyncMock(
+        return_value=SimpleNamespace(content=[SimpleNamespace(type="text", text="ok")])
+    )
+    provider._client.messages.create = create
+
+    await provider.complete("s", [Message(role="user", content="hi")], [])
+
+    assert create.call_args.kwargs["thinking"] == {"type": "adaptive", "display": "summarized"}
+
+
+class _FakeStreamManager:
+    def __init__(self, events, final):
+        self._events = events
+        self._final = final
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    def __aiter__(self):
+        async def generate():
+            for event in self._events:
+                yield event
+
+        return generate()
+
+    async def get_final_message(self):
+        return self._final
+
+
+async def test_streaming_emits_deltas_and_returns_final_message():
+    provider = _provider()
+    deltas = [
+        SimpleNamespace(
+            type="content_block_delta",
+            delta=SimpleNamespace(type="thinking_delta", thinking="pondering "),
+        ),
+        SimpleNamespace(type="message_delta"),  # non-content events are skipped
+        SimpleNamespace(
+            type="content_block_delta", delta=SimpleNamespace(type="text_delta", text="Hi!")
+        ),
+    ]
+    final = SimpleNamespace(content=[SimpleNamespace(type="text", text="Hi!")])
+    captured: dict = {}
+
+    def fake_stream(**kwargs):
+        captured.update(kwargs)
+        return _FakeStreamManager(deltas, final)
+
+    provider._client.messages.stream = fake_stream
+    seen: list[tuple[str, str]] = []
+
+    async def on_event(event):
+        seen.append((event.kind, event.delta))
+
+    result = await provider.complete("SYS", [Message(role="user", content="hi")], [], on_event)
+
+    assert seen == [("thinking", "pondering "), ("text", "Hi!")]
+    assert result.text == "Hi!"
+    assert captured["thinking"] == {"type": "adaptive", "display": "summarized"}
 
 
 @pytest.mark.parametrize(
@@ -188,7 +281,7 @@ async def test_complete_sends_model_thinking_and_mapped_payload():
     ],
 )
 async def test_errors_become_friendly_provider_errors(error, fragment):
-    provider = AnthropicProvider(api_key="test-key")
+    provider = _provider()
     provider._client.messages.create = AsyncMock(side_effect=error)
 
     with pytest.raises(LLMProviderError, match=fragment):

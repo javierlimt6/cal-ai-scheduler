@@ -33,7 +33,8 @@ env vars or network — cal.com is mocked with respx, the LLM with `MockProvider
 
 ## Architecture
 
-Request flow: browser UI (`app/static/index.html`) → `POST /api/chat` or `/api/chat/confirm`
+Request flow: browser UI (`app/static/index.html`) → `POST /api/chat` (SSE stream: `thinking` /
+`text` / `tool` events, terminal `done`/`error`) or `/api/chat/confirm` (plain JSON)
 (`app/main.py`, wiring in lifespan, per-session rate limit) → `Agent.chat()` /
 `Agent.resolve_pending()` (`app/agent/loop.py`) → LLM provider + tool dispatch → `CalComClient`
 (`app/calcom/client.py`) → cal.com v2 API.
@@ -49,7 +50,12 @@ Key invariants to preserve:
 - **Destructive actions execute only on an explicit user click.** The loop freezes
   `cancel_booking`/`reschedule_booking` calls as a `PendingAction`; only
   `Agent.resolve_pending` (via `POST /api/chat/confirm`) executes one, with the arguments frozen
-  at proposal time. A new mutating tool belongs in `DESTRUCTIVE_TOOLS`.
+  at proposal time. A new mutating tool belongs in `DESTRUCTIVE_TOOLS`. The pending slot is
+  reserved synchronously (no await between check and store) before the card-enriching
+  `booking_lookup` fetch — keep it that way or concurrent calls race.
+- **Never hardcode a thinking config** in the Anthropic adapter — support is resolved per model
+  via the Models API (`_thinking_config`, cached); Haiku 4.5 has no adaptive thinking and 400s
+  if sent one.
 - **The system prompt is rebuilt every turn** (it embeds the current datetime so relative dates
   resolve correctly in a long-lived server). `Agent` takes a zero-arg callable, not a string.
 - **cal.com pins API versions per endpoint** via the `cal-api-version` header — the constants at

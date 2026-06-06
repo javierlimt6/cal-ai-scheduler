@@ -11,7 +11,7 @@ import re
 import uuid
 from datetime import UTC, datetime, timedelta
 
-from app.llm.base import LLMResponse, Message, ToolCall, ToolDef
+from app.llm.base import LLMResponse, Message, StreamEvent, StreamHandler, ToolCall, ToolDef
 
 ISO_DATETIME = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?(?:Z|[+-]\d{2}:\d{2})?")
 EMAIL = re.compile(r"[\w.+-]+@[\w-]+\.[\w.]+")
@@ -37,12 +37,18 @@ def _call(name: str, **arguments) -> LLMResponse:
 
 class MockProvider:
     async def complete(
-        self, system: str, messages: list[Message], tools: list[ToolDef]
+        self,
+        system: str,
+        messages: list[Message],
+        tools: list[ToolDef],
+        on_event: StreamHandler | None = None,
     ) -> LLMResponse:
         last = messages[-1]
-        if last.role == "tool":
-            return self._summarize(messages)
-        return self._route(last.content)
+        response = self._summarize(messages) if last.role == "tool" else self._route(last.content)
+        # Deterministic single-chunk "stream" so the SSE path works keyless
+        if on_event is not None and response.text:
+            await on_event(StreamEvent("text", response.text))
+        return response
 
     def _route(self, text: str) -> LLMResponse:
         lowered = text.lower()

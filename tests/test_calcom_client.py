@@ -143,6 +143,20 @@ async def test_reschedule_booking(client):
 
 
 @respx.mock
+async def test_get_booking_by_uid(client):
+    route = respx.get(f"{BASE}/bookings/uid123").mock(
+        return_value=httpx.Response(
+            200, json={"status": "success", "data": {"uid": "uid123", "title": "Intro"}}
+        )
+    )
+
+    data = await client.get_booking("uid123")
+
+    assert data == {"uid": "uid123", "title": "Intro"}
+    assert route.calls.last.request.headers["cal-api-version"] == "2026-02-25"
+
+
+@respx.mock
 async def test_booking_uid_is_url_quoted(client):
     # An LLM-supplied uid must not be able to reshape the request path
     route = respx.post(f"{BASE}/bookings/ab%2F..%2Fcd/cancel").mock(

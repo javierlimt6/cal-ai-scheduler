@@ -1,12 +1,15 @@
-"""FastAPI app: serves the chat UI and the /api/chat endpoint."""
+"""FastAPI app: serves the chat UI and the /api/chat endpoints."""
 
+import asyncio
+import json
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any
 from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field, field_validator
 
 from app.agent import Agent, AgentReply, PendingActionError, build_dispatch, build_system_prompt
@@ -69,6 +72,8 @@ async def lifespan(app: FastAPI):
             provider=get_provider(settings.llm_provider, settings),
             dispatch=build_dispatch(calcom, username),
             system_prompt=lambda: build_system_prompt(timezone),
+            booking_lookup=calcom.get_booking,  # rich confirmation cards
+            timezone=timezone,
         )
         app.state.rate_limiter = RateLimiter(RATE_LIMIT_REQUESTS, RATE_LIMIT_WINDOW_SECONDS)
         yield
@@ -141,23 +146,62 @@ async def health() -> dict:
     return {"status": "ok"}
 
 
+def _sse(event: str, data: dict[str, Any]) -> str:
+    return f"event: {event}\ndata: {json.dumps(data)}\n\n"
+
+
+# Strong refs to in-flight turn tasks (the event loop only keeps weak ones);
+# a task outlives its SSE stream if the client disconnects mid-turn, so the
+# session history is still completed consistently.
+_turn_tasks: set[asyncio.Task] = set()
+
+
 @app.post("/api/chat")
-async def chat(request: ChatRequest) -> ChatResponse:
+async def chat(request: ChatRequest) -> StreamingResponse:
+    """Run one chat turn, streaming progress as Server-Sent Events.
+
+    Event order: any number of `thinking` / `text` deltas and `tool`
+    completions, then exactly one terminal `done` (the full ChatResponse
+    payload) or `error` ({detail, status}).
+    """
     _check_rate_limit(request.session_id)
-    try:
-        reply = await app.state.agent.chat(request.session_id, request.message)
-    except LLMProviderError as exc:
-        # Adapter messages are already user-presentable; pass them through.
-        logger.error("LLM provider error in /api/chat: %s", exc)
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-    except Exception as exc:  # last-resort guard so the UI always gets JSON
-        # HTTPException is handled (not propagated), so log the root cause here
-        # or it vanishes entirely.
-        logger.exception("Unhandled error in /api/chat")
-        raise HTTPException(
-            status_code=500, detail="Something went wrong handling that message."
-        ) from exc
-    return _to_chat_response(reply)
+    queue: asyncio.Queue[str | None] = asyncio.Queue()
+
+    async def emit(event: dict[str, Any]) -> None:
+        await queue.put(_sse(event.pop("type"), event))
+
+    async def run_turn() -> None:
+        try:
+            reply = await app.state.agent.chat(request.session_id, request.message, emit)
+            await queue.put(_sse("done", _to_chat_response(reply).model_dump()))
+        except LLMProviderError as exc:
+            # Adapter messages are already user-presentable; pass them through.
+            logger.error("LLM provider error in /api/chat: %s", exc)
+            await queue.put(_sse("error", {"detail": str(exc), "status": 502}))
+        except Exception:
+            logger.exception("Unhandled error in /api/chat")
+            await queue.put(
+                _sse(
+                    "error",
+                    {"detail": "Something went wrong handling that message.", "status": 500},
+                )
+            )
+        finally:
+            await queue.put(None)  # end of stream
+
+    task = asyncio.create_task(run_turn())
+    _turn_tasks.add(task)
+    task.add_done_callback(_turn_tasks.discard)
+
+    async def event_source():
+        while (frame := await queue.get()) is not None:
+            yield frame
+
+    return StreamingResponse(
+        event_source(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.post("/api/chat/confirm")

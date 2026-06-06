@@ -40,7 +40,8 @@ uv run pytest
 
 ```
 Browser chat UI (app/static/index.html)
-        │  POST /api/chat {session_id, message}     POST /api/chat/confirm {action_id, approved}
+        │  POST /api/chat → SSE stream              POST /api/chat/confirm {action_id, approved}
+        │  (thinking/text deltas, live tool chips)
         ▼
 FastAPI (app/main.py) — rate-limited per session
         ▼
@@ -56,10 +57,15 @@ Agent loop (app/agent/loop.py) ──── system prompt w/ live "now" (app/age
 - **Agent loop** — sends the conversation + tool schemas to the LLM; executes any tool calls it
   returns (concurrently) against cal.com; feeds results back; repeats until the LLM answers in
   prose. Iterations, history length, and session count are all capped.
+- **Streaming** — `/api/chat` answers as Server-Sent Events: the model's thinking (where the
+  model supports it), reply text deltas, and each tool completion stream live; a terminal `done`
+  event carries the final structured payload. The confirm endpoint stays plain JSON — its reply
+  is server-authored and instant.
 - **Confirmation gate** — `cancel_booking` / `reschedule_booking` never execute off the LLM's
-  decision alone. The call is frozen server-side and the UI shows a Confirm/Decline card; only an
-  explicit click runs it, with exactly the frozen arguments. A prompt-injected booking title can't
-  cancel anything.
+  decision alone. The call is frozen server-side and the UI shows a Confirm/Decline card — with
+  the real booking's title, attendees, times (localized), and location fetched at proposal time —
+  and only an explicit click runs it, with exactly the frozen arguments. A prompt-injected
+  booking title can't cancel anything.
 - **Tools** — `list_bookings` (cursor-paginated), `list_event_types`, `get_available_slots`,
   `create_booking`, `cancel_booking`, `reschedule_booking`.
 - **LLM abstraction** — the loop speaks only the neutral types in `app/llm/base.py`
@@ -90,8 +96,9 @@ describes.
 
 - Sessions are in-memory (one per browser tab) and evicted oldest-first past a cap — fine for a
   demo, not multi-process safe. The rate limiter is in-process for the same reason.
-- Responses are plain JSON (no streaming) — acceptable at chat-reply sizes; SSE streaming is the
-  natural next step.
 - The system prompt embeds the current time each turn (so "tomorrow" stays correct in a
   long-lived server), which defeats prompt caching of the message history — a conscious
   correctness-over-cost choice at this scale.
+- The adapter checks the Models API once per process to decide whether the configured model
+  supports adaptive thinking (e.g. `claude-haiku-4-5` doesn't) — thinking is simply omitted
+  where unsupported.
