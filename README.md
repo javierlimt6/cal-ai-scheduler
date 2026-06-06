@@ -1,35 +1,81 @@
-# Conversational scheduling assistant coding challenge
+# Conversational scheduling assistant
 
-## Overview
+A chatbot that lets a busy founder manage their [cal.com](https://cal.com) calendar through plain
+conversation — book events, see what's coming up, cancel, and reschedule — with a web chat UI.
 
-Meet your user: a busy founder who lives in their inbox and runs their day out of cal.com. They don't want forms or
-menus — they just want to type things like "book a 30-min intro with a candidate Thursday afternoon", "what's on my
-calendar tomorrow?", or "move my 3pm to later today" and have it handled.
+Built for the coding challenge described in [CHALLENGE.md](CHALLENGE.md).
 
-Your task is to build an interactive chatbot that lets this user manage their cal.com account through plain conversation.
+## Quick start
 
-How you build the conversational layer is up to you. You are free to use any LLM provider.
+Requires [uv](https://docs.astral.sh/uv/) (`brew install uv`).
 
-## Requirements
+```bash
+cp .env.example .env       # add your cal.com API key + username
+uv run uvicorn app.main:app
+```
 
-Build a simple chatbot that can interact with the cal.com REST API. Through the chat interface, the user should be able to:
+Open http://localhost:8000 and chat. Run the tests with:
 
- - Book a new event (the assistant gathers whatever details it needs, then creates the event).
- - See their scheduled events.
- - Cancel an event.
- - Reschedule an event they've booked.
+```bash
+uv run pytest
+```
 
-It's a plus if the chatbot is usable through an interactive web UI.
+### Configuration (`.env`)
 
-Build the experience you'd want this user to have.
+| Variable | Description |
+|---|---|
+| `CAL_API_KEY` | cal.com API key ([create one here](https://app.cal.com/settings/developer/api-keys)) |
+| `CAL_USERNAME` | Your cal.com username (used to look up your event types) |
+| `LLM_PROVIDER` | `mock` (default — runs with no LLM key; see below) |
+| `TIMEZONE` | IANA timezone used when talking about times, e.g. `America/New_York` |
 
-### Language
+## Architecture
 
-Please use Python for this code challenge.
+```
+Browser chat UI (app/static/index.html)
+        │  POST /api/chat {session_id, message}
+        ▼
+FastAPI (app/main.py)
+        ▼
+Agent loop (app/agent/loop.py) ──── system prompt w/ live "now" (app/agent/prompts.py)
+        │   provider-agnostic tool-use loop, per-session history
+        ├──► LLM provider (app/llm/) — swappable behind the LLMProvider protocol
+        └──► Tool dispatch (app/agent/tools.py)
+                     ▼
+             CalComClient (app/calcom/client.py) ──► cal.com v2 REST API
+```
 
-## Cal.com API Reference
+- **Agent loop** — sends the conversation + tool schemas to the LLM; executes any tool calls it
+  returns (concurrently) against cal.com; feeds results back; repeats until the LLM answers in
+  prose. Iterations, history length, and session count are all capped.
+- **Tools** — `list_bookings`, `list_event_types`, `get_available_slots`, `create_booking`,
+  `cancel_booking`, `reschedule_booking`.
+- **LLM abstraction** — the loop speaks only the neutral types in `app/llm/base.py`
+  (`Message`, `ToolDef`, `ToolCall`, `LLMResponse`), so the vendor is swappable. The included
+  `MockProvider` maps simple phrasings to tool calls deterministically, which keeps the whole
+  stack runnable and testable with **no LLM API key**. A real provider (Anthropic/OpenAI) is a
+  single adapter class behind the same protocol.
+- **cal.com client** — thin async client over the v2 API. Note cal.com versions endpoints
+  individually via the `cal-api-version` header; each method pins its documented version.
 
-First, you'll need to create a cal.com account and obtain an API key. Follow the instructions in the
-[authentication document](https://cal.com/docs/enterprise-features/api/authentication) to get started.
+### Mock-mode phrasings
 
-Second, here is the documentation for the cal.com [booking API](https://cal.com/docs/api-reference/v2/bookings/get-all-bookings) and [slot api](https://cal.com/docs/api-reference/v2/slots/find-out-when-is-an-event-type-ready-to-be-booked).
+With `LLM_PROVIDER=mock`, the assistant understands simple deterministic phrasings:
+
+- `What's on my calendar?`
+- `What event types do I have?`
+- `Show slots for event type 123`
+- `Book event type 123 at 2026-06-12T10:00:00Z for ada@example.com`
+- `Cancel booking <uid>`
+- `Reschedule booking <uid> to 2026-06-12T10:00:00Z`
+
+With a real LLM provider these become free-form ("book a 30-min intro with a candidate Thursday
+afternoon"), with the provider doing the date resolution and slot negotiation the system prompt
+describes.
+
+## Known trade-offs
+
+- Sessions are in-memory (one per browser tab) and evicted oldest-first past a cap — fine for a
+  demo, not multi-process safe.
+- Responses are plain JSON (no streaming); streaming becomes worthwhile once a real LLM provider
+  is wired in.

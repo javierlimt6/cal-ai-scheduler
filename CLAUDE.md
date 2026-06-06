@@ -4,27 +4,49 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-This is a coding challenge: build an interactive chatbot (in **Python** — required) that lets a user manage their cal.com account through plain conversation. The target user is a busy founder who wants to type things like "book a 30-min intro with a candidate Thursday afternoon" or "move my 3pm to later today" — no forms or menus.
+A conversational scheduling assistant for cal.com, built for the coding challenge in
+`CHALLENGE.md`: a Python chatbot through which a user books, views, cancels, and reschedules
+cal.com events in plain language, served behind a FastAPI web chat UI.
 
-As of now the repository contains only the README; the implementation has not been started.
+## Commands
 
-## Requirements (from README.md)
+Uses [uv](https://docs.astral.sh/uv/) for everything:
 
-The chatbot must interact with the cal.com REST API and support, through conversation:
+```bash
+uv sync                                  # install/refresh dependencies
+uv run pytest                            # run all tests
+uv run pytest tests/test_agent_loop.py   # run one test file
+uv run pytest -k test_book_event         # run one test
+uv run uvicorn app.main:app --reload     # dev server at http://localhost:8000
+```
 
-1. **Book** a new event — the assistant gathers whatever details it needs, then creates the event
-2. **View** scheduled events
-3. **Cancel** an event
-4. **Reschedule** an existing booking
+Runtime config comes from `.env` (see `.env.example`): `CAL_API_KEY`, `CAL_USERNAME`,
+`LLM_PROVIDER` (default `mock`), `TIMEZONE`. Tests need no env vars or network — cal.com is
+mocked with respx and the LLM with `MockProvider`.
 
-Any LLM provider may be used. An interactive web UI is a plus, not a requirement. Guiding principle from the README: "Build the experience you'd want this user to have."
+## Architecture
 
-## cal.com API (v2)
+Request flow: browser UI (`app/static/index.html`) → `POST /api/chat` (`app/main.py`, wiring in
+lifespan) → `Agent.chat()` (`app/agent/loop.py`) → LLM provider + tool dispatch → `CalComClient`
+(`app/calcom/client.py`) → cal.com v2 API.
 
-A cal.com account and API key are prerequisites. Key documentation:
+Key invariants to preserve:
 
-- Authentication / API key: https://cal.com/docs/enterprise-features/api/authentication
-- Bookings API: https://cal.com/docs/api-reference/v2/bookings/get-all-bookings
-- Slots API (availability): https://cal.com/docs/api-reference/v2/slots/find-out-when-is-an-event-type-ready-to-be-booked
+- **The agent loop speaks only the neutral LLM types** in `app/llm/base.py` (`Message`,
+  `ToolDef`, `ToolCall`, `ToolResult`, `LLMResponse`). Never import a vendor SDK outside an
+  `app/llm/<provider>.py` adapter; register new providers in `get_provider()`
+  (`app/llm/__init__.py`).
+- **The system prompt is rebuilt every turn** (it embeds the current datetime so relative dates
+  resolve correctly in a long-lived server). `Agent` takes a zero-arg callable, not a string.
+- **cal.com pins API versions per endpoint** via the `cal-api-version` header — the constants at
+  the top of `app/calcom/client.py` are per-endpoint and intentionally not shared. `_request`
+  strips `None` values from params and JSON bodies in one place; tool/client methods just pass
+  optionals through.
+- **Tool schemas and dispatch live together** in `app/agent/tools.py`; adding a tool means one
+  `ToolDef` + one dispatch entry (tests build dispatch via `build_dispatch` against a fake
+  client — don't hand-copy the mapping).
+- Growth is bounded everywhere: tool iterations (`MAX_TOOL_ITERATIONS`), per-session history
+  (`MAX_HISTORY_MESSAGES`), session count (`MAX_SESSIONS`).
 
-The booking flow generally requires checking available slots (Slots API) before creating a booking, and bookings are tied to an event type.
+The `MockProvider` (`app/llm/mock.py`) is deterministic keyword→tool-call scripting so the whole
+stack runs and is tested without any LLM key; its phrasing rules are listed in the README.
