@@ -159,6 +159,18 @@ def test_refusal_gets_refusal_text():
     assert "can't help" in from_anthropic_response(response).text
 
 
+def test_truncated_response_tells_the_user():
+    response = SimpleNamespace(
+        content=[SimpleNamespace(type="text", text="First half of a long answer")],
+        stop_reason="max_tokens",
+    )
+
+    result = from_anthropic_response(response)
+
+    assert result.text.startswith("First half")
+    assert "ran out of room" in result.text
+
+
 # --- complete() ------------------------------------------------------------
 
 

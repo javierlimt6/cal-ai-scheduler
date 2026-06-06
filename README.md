@@ -31,7 +31,7 @@ uv run pytest
 | `CAL_API_KEY` | cal.com API key ([create one here](https://app.cal.com/settings/developer/api-keys)) |
 | `ANTHROPIC_API_KEY` | Anthropic API key (required when `LLM_PROVIDER=anthropic`) |
 | `LLM_PROVIDER` | `anthropic` (Claude) or `mock` (deterministic, runs with no LLM key; see below) |
-| `LLM_MODEL` | Optional model override; defaults to `claude-opus-4-8` |
+| `LLM_MODEL` | `.env.example` pins `claude-haiku-4-5` (fast demo); unset for `claude-opus-4-8` |
 | `CAL_USERNAME` | Optional — resolved from your cal.com profile (`/me`) at startup if omitted |
 | `TIMEZONE` | Optional IANA timezone, e.g. `America/New_York` — also resolved from `/me` |
 | `CAL_API_BASE_URL` | Optional override for self-hosted cal.com (default `https://api.cal.com/v2`) |

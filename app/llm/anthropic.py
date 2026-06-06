@@ -159,11 +159,14 @@ def from_anthropic_response(response: Any) -> LLMResponse:
             tool_calls.append(ToolCall(id=block.id, name=block.name, arguments=arguments))
 
     text = "\n\n".join(text_parts).strip()
+    stop_reason = getattr(response, "stop_reason", None)
     if not text and not tool_calls:
-        if getattr(response, "stop_reason", None) == "refusal":
+        if stop_reason == "refusal":
             text = "I can't help with that request."
         else:
             text = "I didn't manage to produce a response — could you rephrase that?"
+    elif stop_reason == "max_tokens":
+        text += '\n\n(I ran out of room there — say "continue" and I\'ll pick up where I left off.)'
     return LLMResponse(text=text, tool_calls=tool_calls, raw=list(response.content))
 
 

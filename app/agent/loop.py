@@ -259,7 +259,9 @@ class Agent:
         if self._booking_lookup is None or not uid:
             return None
         try:
-            booking = await self._booking_lookup(str(uid))
+            # Decoration only — a slow cal.com must not stall the whole tool
+            # batch (this await sits inside the turn's asyncio.gather).
+            booking = await asyncio.wait_for(self._booking_lookup(str(uid)), timeout=5.0)
         except Exception as exc:
             logger.warning("Could not fetch booking %r for the confirmation card: %s", uid, exc)
             return None

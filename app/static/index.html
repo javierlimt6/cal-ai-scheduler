@@ -12,7 +12,6 @@
     --ink: #111827;
     --muted: #6b7280;
     --accent: #111827;
-    --accent-soft: #f3f4f6;
     --border: #e5e7eb;
     --sans: -apple-system, "Inter", "Segoe UI", "Helvetica Neue", Arial, sans-serif;
     --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
@@ -205,6 +204,7 @@
 <form id="chat-form">
   <div class="inner">
     <input id="input" type="text" autocomplete="off"
+           aria-label="Message the scheduling assistant"
            placeholder='Try: "What&#39;s on my calendar?"' autofocus>
     <button id="send" type="submit">Send</button>
   </div>
@@ -377,12 +377,22 @@ async function postAndRender(url, payload) {
 // Streaming POST for /api/chat: consumes SSE frames and renders them live.
 async function streamChat(payload, onFirstEvent) {
   const live = {
-    thinking: null, thinkingText: "",
+    thinking: null,
     tools: null,
     reply: null, replyText: "", needsBreak: false,
   };
 
   const scroll = () => { messagesEl.scrollTop = messagesEl.scrollHeight; };
+
+  // Shared end-of-turn cleanup: collapse the reasoning, swap raw streamed
+  // text for the markdown rendering. Used by both `done` and `error`.
+  const finalizeLive = () => {
+    if (live.thinking) live.thinking.open = false;
+    if (live.reply) {
+      live.reply.replaceChildren();
+      renderRichText(live.reply, live.replyText);
+    }
+  };
 
   const handlers = {
     thinking(data) {
@@ -392,14 +402,14 @@ async function streamChat(payload, onFirstEvent) {
         live.thinking.open = true;
         const summary = document.createElement("summary");
         summary.textContent = "thinking";
+        summary.setAttribute("aria-label", "Model reasoning (collapsible)");
         const body = document.createElement("div");
         body.className = "body";
         live.thinking.append(summary, body);
         messagesEl.appendChild(live.thinking);
       }
-      live.thinkingText += data.delta;
       const body = live.thinking.querySelector(".body");
-      body.textContent = live.thinkingText;
+      body.textContent += data.delta;
       body.scrollTop = body.scrollHeight;
       scroll();
     },
@@ -437,19 +447,18 @@ async function streamChat(payload, onFirstEvent) {
       scroll();
     },
     done(data) {
-      if (live.thinking) live.thinking.open = false;
       if (!live.reply) {
         live.reply = document.createElement("div");
         live.reply.className = "msg assistant";
         messagesEl.appendChild(live.reply);
       }
-      // Swap the raw streamed text for the markdown-rendered version
-      live.reply.replaceChildren();
-      renderRichText(live.reply, live.replyText || data.reply);
+      if (!live.replyText) live.replyText = data.reply;  // provider didn't stream
+      finalizeLive();
       if (data.pending_action) addPendingCard(data.pending_action);
       scroll();
     },
     error(data) {
+      finalizeLive();  // don't leave a half-rendered turn above the error
       addMessage("assistant", data.detail || "Sorry, something went wrong. Please try again.");
     },
   };
@@ -479,12 +488,17 @@ async function streamChat(payload, onFirstEvent) {
         const frame = buffer.slice(0, end);
         buffer = buffer.slice(end + 2);
         if (!sawEvent) { sawEvent = true; onFirstEvent(); }
-        let event = "", data = {};
-        for (const line of frame.split("\n")) {
-          if (line.startsWith("event: ")) event = line.slice(7);
-          else if (line.startsWith("data: ")) data = JSON.parse(line.slice(6));
+        // One bad frame (or a handler bug) must not kill the whole stream
+        try {
+          let event = "", data = {};
+          for (const line of frame.split("\n")) {
+            if (line.startsWith("event: ")) event = line.slice(7);
+            else if (line.startsWith("data: ")) data = JSON.parse(line.slice(6));
+          }
+          if (handlers[event]) handlers[event](data);
+        } catch (err) {
+          console.warn("Skipping malformed stream frame:", err);
         }
-        if (handlers[event]) handlers[event](data);
       }
     }
   } catch {
@@ -508,6 +522,7 @@ form.addEventListener("submit", async (e) => {
   retireActiveCard();  // typing a new message moves on; the server drops the pending action
   addMessage("user", text);
   input.value = "";
+  input.disabled = true;  // no silent drops: you can't type into an in-flight turn
   sendBtn.disabled = true;
 
   const typing = document.createElement("div");
@@ -523,6 +538,7 @@ form.addEventListener("submit", async (e) => {
     typing.remove();
     inFlight = false;
     sendBtn.disabled = false;
+    input.disabled = false;
     input.focus();
   }
 });
