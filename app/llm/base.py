@@ -9,6 +9,14 @@ from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol
 
 
+class LLMProviderError(Exception):
+    """A provider call failed (bad credentials, rate limit, network, ...).
+
+    Adapters raise this with a user-presentable message so the web layer can
+    surface it without knowing which vendor is behind the protocol.
+    """
+
+
 @dataclass
 class ToolDef:
     name: str
@@ -36,12 +44,17 @@ class Message:
     content: str = ""
     tool_calls: list[ToolCall] = field(default_factory=list)
     tool_results: list[ToolResult] = field(default_factory=list)
+    # Opaque provider payload round-tripped verbatim (e.g. Anthropic thinking
+    # blocks, which must be resent during a tool-use turn). The agent loop
+    # never inspects it; providers other than the one that set it ignore it.
+    raw: Any = None
 
 
 @dataclass
 class LLMResponse:
     text: str = ""
     tool_calls: list[ToolCall] = field(default_factory=list)
+    raw: Any = None  # see Message.raw
 
 
 class LLMProvider(Protocol):

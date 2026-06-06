@@ -78,7 +78,12 @@ class Agent:
                 return AgentReply(text=response.text, tool_activity=activity)
 
             history.append(
-                Message(role="assistant", content=response.text, tool_calls=response.tool_calls)
+                Message(
+                    role="assistant",
+                    content=response.text,
+                    tool_calls=response.tool_calls,
+                    raw=response.raw,
+                )
             )
 
             outcomes = await asyncio.gather(*(self._run_tool(call) for call in response.tool_calls))

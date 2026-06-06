@@ -10,6 +10,7 @@ dependencies = [
     "httpx>=0.27",
     "pydantic>=2.7",
     "pydantic-settings>=2.3",
+    "anthropic>=0.106.0",
 ]
 
 [dependency-groups]

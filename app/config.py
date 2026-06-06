@@ -13,6 +13,8 @@ class Settings(BaseSettings):
     cal_username: str = ""
 
     llm_provider: str = "mock"
+    llm_model: str = ""  # empty -> the provider's default (anthropic: claude-opus-4-8)
+    anthropic_api_key: str = ""
 
     timezone: str = "UTC"
 

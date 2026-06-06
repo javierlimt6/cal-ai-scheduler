@@ -189,6 +189,32 @@ async def test_lru_session_eviction_keeps_active_sessions(agent, monkeypatch):
     assert set(agent._sessions) == {"a", "c"}
 
 
+async def test_provider_raw_payload_rides_along_on_assistant_messages(fake):
+    """Vendor blocks (e.g. Anthropic thinking) must survive into history verbatim."""
+    sentinel = [{"type": "thinking", "signature": "s"}]
+
+    class RawProvider:
+        def __init__(self):
+            self.turn = 0
+
+        async def complete(self, system, messages, tools):
+            self.turn += 1
+            if self.turn == 1:
+                return LLMResponse(
+                    tool_calls=[ToolCall(id="x", name="list_bookings", arguments={})],
+                    raw=sentinel,
+                )
+            return LLMResponse(text="done")
+
+    agent = Agent(RawProvider(), {"list_bookings": fake.list_bookings}, lambda: "system")
+
+    await agent.chat("s1", "calendar?")
+
+    tool_call_message = agent._sessions["s1"][1]
+    assert tool_call_message.role == "assistant"
+    assert tool_call_message.raw is sentinel
+
+
 async def test_runaway_tool_loop_is_capped(fake):
     class AlwaysToolProvider:
         async def complete(self, system, messages, tools):

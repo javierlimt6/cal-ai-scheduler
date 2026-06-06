@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 from app.agent import Agent, build_dispatch, build_system_prompt
 from app.calcom import CalComClient
 from app.config import get_settings
-from app.llm import get_provider
+from app.llm import LLMProviderError, get_provider
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -29,7 +29,7 @@ async def lifespan(app: FastAPI):
     build_system_prompt(settings.timezone)  # fail fast on an invalid TIMEZONE
     calcom = CalComClient(api_key=settings.cal_api_key, base_url=settings.cal_api_base_url)
     app.state.agent = Agent(
-        provider=get_provider(settings.llm_provider),
+        provider=get_provider(settings.llm_provider, settings),
         dispatch=build_dispatch(calcom, settings.cal_username),
         system_prompt=lambda: build_system_prompt(settings.timezone),
     )
@@ -66,6 +66,10 @@ async def health() -> dict:
 async def chat(request: ChatRequest) -> ChatResponse:
     try:
         reply = await app.state.agent.chat(request.session_id, request.message)
+    except LLMProviderError as exc:
+        # Adapter messages are already user-presentable; pass them through.
+        logger.error("LLM provider error in /api/chat: %s", exc)
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
     except Exception as exc:  # last-resort guard so the UI always gets JSON
         # HTTPException is handled (not propagated), so log the root cause here
         # or it vanishes entirely.
