@@ -130,6 +130,62 @@ async def test_new_message_invalidates_pending_action(agent, fake):
     assert fake.cancelled == []
 
 
+async def test_second_destructive_call_in_one_turn_is_rejected(fake):
+    """Only one action may await confirmation; the second is refused, not queued."""
+
+    class DoubleDestructiveProvider:
+        def __init__(self):
+            self.turn = 0
+
+        async def complete(self, system, messages, tools):
+            self.turn += 1
+            if self.turn == 1:
+                return LLMResponse(
+                    tool_calls=[
+                        ToolCall(
+                            id="c1", name="cancel_booking", arguments={"booking_uid": "first1"}
+                        ),
+                        ToolCall(
+                            id="c2", name="cancel_booking", arguments={"booking_uid": "second2"}
+                        ),
+                    ]
+                )
+            return LLMResponse(text="done")
+
+    agent = Agent(
+        DoubleDestructiveProvider(), {"cancel_booking": fake.cancel_booking}, lambda: "system"
+    )
+
+    reply = await agent.chat("s1", "cancel both bookings")
+
+    assert reply.pending_action is not None
+    assert "first1" in reply.pending_action.summary  # only the first is held
+    assert [(a.name, a.ok) for a in reply.tool_activity] == [("cancel_booking", False)]
+
+    await agent.resolve_pending("s1", reply.pending_action.id, approved=True)
+    assert fake.cancelled == ["first1"]
+
+
+async def test_cancelled_adjective_routes_to_reschedule_not_cancel(agent, fake):
+    """'my cancelled meeting' must not trip the cancel intent (word boundaries)."""
+    reply = await agent.chat(
+        "s1", "Reschedule my cancelled meeting abc12345 to 2026-06-12T10:00:00Z"
+    )
+
+    assert fake.cancelled == []
+    assert reply.pending_action is not None
+    assert reply.pending_action.summary.startswith("Reschedule booking abc12345")
+
+
+async def test_reschedule_from_to_targets_the_later_time(agent):
+    reply = await agent.chat(
+        "s1",
+        "Reschedule booking abc12345 from 2026-06-10T09:00:00Z to 2026-06-12T10:00:00Z",
+    )
+
+    assert "to 2026-06-12T10:00:00Z" in reply.pending_action.summary
+
+
 async def test_wrong_action_id_is_rejected_without_consuming_the_action(agent, fake):
     reply = await agent.chat("s1", "Cancel booking abc123def")
 
@@ -245,6 +301,23 @@ async def test_lru_session_eviction_keeps_active_sessions(agent, monkeypatch):
     await agent.chat("c", "What's on my calendar?")  # evicts "b" (least recent), not "a"
 
     assert set(agent._sessions) == {"a", "c"}
+
+
+async def test_eviction_skips_sessions_mid_turn(agent, monkeypatch):
+    """A session holding its lock (turn in flight) must not be evicted."""
+    import app.agent.loop as loop_module
+
+    monkeypatch.setattr(loop_module, "MAX_SESSIONS", 2)
+
+    await agent.chat("a", "What's on my calendar?")
+    await agent.chat("b", "What's on my calendar?")
+    await agent._locks["a"].acquire()  # simulate "a" mid-turn (it is also the LRU candidate)
+    try:
+        await agent.chat("c", "What's on my calendar?")
+    finally:
+        agent._locks["a"].release()
+
+    assert set(agent._sessions) == {"a", "c"}  # "b" was evicted instead
 
 
 async def test_provider_raw_payload_rides_along_on_assistant_messages(fake):

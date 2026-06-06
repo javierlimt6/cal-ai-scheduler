@@ -34,6 +34,7 @@ uv run pytest
 | `LLM_MODEL` | Optional model override; defaults to `claude-opus-4-8` |
 | `CAL_USERNAME` | Optional — resolved from your cal.com profile (`/me`) at startup if omitted |
 | `TIMEZONE` | Optional IANA timezone, e.g. `America/New_York` — also resolved from `/me` |
+| `CAL_API_BASE_URL` | Optional override for self-hosted cal.com (default `https://api.cal.com/v2`) |
 
 ## Architecture
 

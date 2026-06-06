@@ -43,7 +43,6 @@ class SchedulingClient(Protocol):
         attendee_email: str,
         time_zone: str,
         length_in_minutes: int | None = None,
-        guests: list[str] | None = None,
     ) -> Any: ...
 
     async def cancel_booking(self, booking_uid: str, reason: str | None = None) -> Any: ...

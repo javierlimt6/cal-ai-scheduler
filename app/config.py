@@ -6,6 +6,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
+    """Env beats `.env`. Empty cal_username/timezone are resolved from the
+    cal.com `/me` profile at startup (see lifespan in app/main.py)."""
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     cal_api_key: str = ""

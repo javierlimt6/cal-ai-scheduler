@@ -23,11 +23,15 @@ def test_sessions_are_limited_independently():
     assert limiter.allow("b")
 
 
-def test_tracked_keys_are_bounded(monkeypatch):
+def test_tracked_keys_are_bounded_evicting_oldest_first(monkeypatch):
     monkeypatch.setattr(ratelimit, "MAX_TRACKED_KEYS", 3)
     limiter = RateLimiter(max_requests=5, window_seconds=60)
 
     for key in ("a", "b", "c", "d", "e"):
         assert limiter.allow(key)
 
+    # None were expired (same instant), so the oldest-created keys went first
     assert len(limiter._hits) <= 3
+    assert "a" not in limiter._hits
+    assert "b" not in limiter._hits
+    assert "e" in limiter._hits

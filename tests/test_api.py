@@ -57,6 +57,25 @@ async def test_chat_validates_input(api_client):
     assert response.status_code == 422
 
 
+async def test_whitespace_only_message_is_rejected(api_client):
+    response = await api_client.post("/api/chat", json={"session_id": "s", "message": "   "})
+    assert response.status_code == 422
+
+
+async def test_explicit_invalid_timezone_fails_startup(monkeypatch):
+    """A user-set TIMEZONE typo should crash loudly at boot, not degrade."""
+    from zoneinfo import ZoneInfoNotFoundError
+
+    from app.config import get_settings
+
+    monkeypatch.setenv("TIMEZONE", "Not/AZone")
+    get_settings.cache_clear()
+
+    with pytest.raises(ZoneInfoNotFoundError):
+        async with app.router.lifespan_context(app):
+            pass  # pragma: no cover — startup must raise before yielding
+
+
 @respx.mock
 async def test_destructive_action_needs_explicit_confirmation(api_client):
     cancel_route = respx.post(f"{CAL_BASE}/bookings/abc123def/cancel").mock(

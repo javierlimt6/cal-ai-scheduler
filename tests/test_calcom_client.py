@@ -143,6 +143,46 @@ async def test_reschedule_booking(client):
 
 
 @respx.mock
+async def test_booking_uid_is_url_quoted(client):
+    # An LLM-supplied uid must not be able to reshape the request path
+    route = respx.post(f"{BASE}/bookings/ab%2F..%2Fcd/cancel").mock(
+        return_value=httpx.Response(200, json={"status": "success", "data": {}})
+    )
+
+    await client.cancel_booking("ab/../cd")
+
+    assert route.called
+
+
+@respx.mock
+async def test_list_event_types_sends_username_and_version(client):
+    route = respx.get(f"{BASE}/event-types").mock(
+        return_value=httpx.Response(200, json={"status": "success", "data": [{"id": 1}]})
+    )
+
+    data = await client.list_event_types("javier")
+
+    assert data == [{"id": 1}]
+    request = route.calls.last.request
+    assert request.headers["cal-api-version"] == "2024-06-14"
+    assert "username=javier" in str(request.url)
+
+
+@respx.mock
+async def test_get_me_unwraps_profile(client):
+    route = respx.get(f"{BASE}/me").mock(
+        return_value=httpx.Response(
+            200, json={"status": "success", "data": {"username": "j", "timeZone": "UTC"}}
+        )
+    )
+
+    me = await client.get_me()
+
+    assert me == {"username": "j", "timeZone": "UTC"}
+    assert route.calls.last.request.headers["cal-api-version"] == "2024-06-14"
+
+
+@respx.mock
 async def test_get_slots_uses_slots_api_version(client):
     route = respx.get(f"{BASE}/slots").mock(
         return_value=httpx.Response(

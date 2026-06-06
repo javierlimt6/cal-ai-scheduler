@@ -134,7 +134,7 @@ What happens when the user types *"What's on my calendar?"*:
      and `{"error": "string"}` bodies),
    - transport failures (DNS, refused, protocol) → `CalComError(503, "Could not reach cal.com…")`.
 8. **Response out** (`main.py`): `AgentReply` is projected onto wire DTOs — `reply`,
-   `tool_activity` as `[{name, ok}]` (raw `arguments` deliberately **not** exposed), and
+   `tool_activity` as `[{name, ok}]` (tool arguments never leave the server), and
    `pending_action` as `{id, summary}` when a confirmation is outstanding. Error guards keep the
    UI in JSON: `LLMProviderError` → 502 with the adapter's friendly message, anything else → 500.
 9. **Browser** renders friendly tool chips ("✓ checked your calendar"), the assistant bubble
@@ -318,7 +318,7 @@ which is what `tests/conftest.py` leans on to keep the suite hermetic.
 
 ## 5. Testing strategy
 
-58 tests, **zero network and zero secrets required** — `tests/conftest.py` pins the env per test
+The suite needs **zero network and zero secrets** — `tests/conftest.py` pins the env per test
 (real env vars beat `.env`, so a developer's local secrets can't leak into the suite), and the
 seam for each layer is mocked at the layer below it:
 
@@ -355,16 +355,17 @@ Run: `uv run pytest` (or `-k name` / a file path for a subset). CI
 - **In-memory sessions, single process** — a restart clears conversations; multiple workers
   wouldn't share state. The rate limiter is in-process for the same reason. Acceptable per
   challenge scope; see extension point above.
-- **Session = browser tab** — no auth/cookies; the session id is client-minted. Fine for a demo;
-  a production deployment would mint server-side, signed.
+- **Session = browser tab** — no auth/cookies, no CORS/TrustedHost middleware; the session id is
+  client-minted. Deliberate for a localhost demo; a production deployment would mint session ids
+  server-side (signed) and add explicit CORS + host allowlists.
 - **No prompt caching** — the system prompt embeds live "now" each turn, which invalidates the
   Anthropic cache prefix for system+messages every turn. Correctness of relative dates beats
   token cost at this scale; a cost-sensitive deployment would round "now" and move it later in
   the prompt.
-- **Eviction edge**: a session evicted at the `MAX_SESSIONS` boundary while a turn is in flight
-  finishes against its orphaned history (the turn completes; subsequent turns start fresh).
-- **`ToolActivity.arguments`** is recorded server-side but intentionally not sent to the browser
-  (avoid leaking attendee details into the DOM); the confirmation card exposes only a
-  server-authored summary for the same reason.
+- **Eviction prefers idle sessions**: at the `MAX_SESSIONS` boundary the LRU walk skips any
+  session whose turn is in flight (its lock is held); if literally every session is mid-turn the
+  cap is briefly exceeded rather than forking a live history.
+- **Tool arguments stay server-side** — the browser sees only `{name, ok}` per tool call and a
+  server-authored summary on the confirmation card (no attendee details in the DOM).
 - **Mock provider's NLU is keyword-grade** by design — it exists to exercise the full stack
   deterministically, not to replace the LLM. The exact phrasings are in the README.

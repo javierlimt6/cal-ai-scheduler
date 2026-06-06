@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.agent import Agent, AgentReply, PendingActionError, build_dispatch, build_system_prompt
 from app.calcom import CalComClient, CalComError
@@ -45,42 +45,53 @@ async def lifespan(app: FastAPI):
             "CAL_API_KEY is not set — cal.com calls will fail. Copy .env.example to .env."
         )
     calcom = CalComClient(api_key=settings.cal_api_key, base_url=settings.cal_api_base_url)
+    try:  # everything after client construction must release it, even on startup failure
+        # Identity bootstrap: anything not configured explicitly comes from the
+        # authenticated cal.com profile, so a bare CAL_API_KEY is enough to run.
+        # Profile data is best-effort — a bad value degrades, never crashes boot
+        # (an explicit TIMEZONE env var, by contrast, still fails fast below).
+        username, timezone = settings.cal_username, settings.timezone
+        if settings.cal_api_key and not (username and timezone):
+            try:
+                me = await calcom.get_me()
+                username = username or me.get("username") or ""
+                if not timezone:
+                    timezone = _validate_timezone(str(me.get("timeZone") or ""))
+                logger.info(
+                    "Resolved from cal.com /me: username=%r, timezone=%r", username, timezone
+                )
+            except CalComError as exc:
+                logger.warning("Could not resolve profile from cal.com /me: %s", exc)
+        timezone = timezone or "UTC"
 
-    # Identity bootstrap: anything not configured explicitly comes from the
-    # authenticated cal.com profile, so a bare CAL_API_KEY is enough to run.
-    # Profile data is best-effort — a bad value degrades, never crashes boot
-    # (an explicit TIMEZONE env var, by contrast, still fails fast below).
-    username, timezone = settings.cal_username, settings.timezone
-    if settings.cal_api_key and not (username and timezone):
-        try:
-            me = await calcom.get_me()
-            username = username or me.get("username") or ""
-            if not timezone:
-                timezone = _validate_timezone(str(me.get("timeZone") or ""))
-            logger.info("Resolved from cal.com /me: username=%r, timezone=%r", username, timezone)
-        except CalComError as exc:
-            logger.warning("Could not resolve profile from cal.com /me: %s", exc)
-    timezone = timezone or "UTC"
-
-    build_system_prompt(timezone)  # fail fast on an invalid TIMEZONE
-    app.state.agent = Agent(
-        provider=get_provider(settings.llm_provider, settings),
-        dispatch=build_dispatch(calcom, username),
-        system_prompt=lambda: build_system_prompt(timezone),
-    )
-    app.state.rate_limiter = RateLimiter(RATE_LIMIT_REQUESTS, RATE_LIMIT_WINDOW_SECONDS)
-    try:
+        build_system_prompt(timezone)  # fail fast on an invalid TIMEZONE
+        app.state.agent = Agent(
+            provider=get_provider(settings.llm_provider, settings),
+            dispatch=build_dispatch(calcom, username),
+            system_prompt=lambda: build_system_prompt(timezone),
+        )
+        app.state.rate_limiter = RateLimiter(RATE_LIMIT_REQUESTS, RATE_LIMIT_WINDOW_SECONDS)
         yield
     finally:
         await calcom.aclose()
 
 
+# Local demo posture, deliberate: no auth and no CORS/TrustedHost middleware —
+# the API is meant to be driven by its own UI on localhost (ARCHITECTURE.md §7).
 app = FastAPI(title="cal.com scheduling assistant", lifespan=lifespan)
 
 
 class ChatRequest(BaseModel):
     session_id: str = Field(min_length=1, max_length=128)
     message: str = Field(min_length=1, max_length=4000)
+
+    @field_validator("message")
+    @classmethod
+    def _not_blank(cls, value: str) -> str:
+        value = value.strip()
+        if not value:  # whitespace satisfies min_length but is an empty turn
+            raise ValueError("message must not be blank")
+        return value
 
 
 class ConfirmRequest(BaseModel):

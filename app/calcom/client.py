@@ -7,6 +7,7 @@ for its endpoint.
 
 import logging
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
@@ -128,7 +129,6 @@ class CalComClient:
         attendee_email: str,
         time_zone: str,
         length_in_minutes: int | None = None,
-        guests: list[str] | None = None,
     ) -> Any:
         return await self._request(
             "POST",
@@ -143,14 +143,14 @@ class CalComClient:
                     "timeZone": time_zone,
                 },
                 "lengthInMinutes": length_in_minutes,
-                "guests": guests or None,
             },
         )
 
     async def cancel_booking(self, booking_uid: str, reason: str | None = None) -> Any:
+        # quote(): the uid is LLM-supplied — it must not be able to reshape the path
         return await self._request(
             "POST",
-            f"/bookings/{booking_uid}/cancel",
+            f"/bookings/{quote(booking_uid, safe='')}/cancel",
             api_version=BOOKINGS_WRITE_API_VERSION,
             json={"cancellationReason": reason},
         )
@@ -160,7 +160,7 @@ class CalComClient:
     ) -> Any:
         return await self._request(
             "POST",
-            f"/bookings/{booking_uid}/reschedule",
+            f"/bookings/{quote(booking_uid, safe='')}/reschedule",
             api_version=BOOKINGS_WRITE_API_VERSION,
             json={"start": new_start, "reschedulingReason": reason},
         )

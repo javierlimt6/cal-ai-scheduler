@@ -17,6 +17,9 @@ MAX_TOOL_ITERATIONS = 8
 # Cap per-session history so long-lived sessions don't grow without bound
 # (in tokens sent to the LLM or in memory).
 MAX_HISTORY_MESSAGES = 60
+# _trim realigns the window onto a user message; that only stays safe if one
+# full turn (user + iterations*(assistant+tool) + assistant) fits in the cap.
+assert MAX_TOOL_ITERATIONS * 2 + 2 <= MAX_HISTORY_MESSAGES
 # Cap the number of tracked sessions; least-recently-used are evicted first.
 MAX_SESSIONS = 500
 
@@ -49,10 +52,9 @@ class PendingAction:
 
 @dataclass
 class ToolActivity:
-    """A record of one tool invocation, surfaced to the UI."""
+    """A record of one tool invocation, surfaced to the UI (name + outcome only)."""
 
     name: str
-    arguments: dict
     ok: bool
 
 
@@ -87,10 +89,22 @@ class Agent:
 
     async def _chat(self, session_id: str, user_message: str) -> AgentReply:
         if session_id not in self._sessions and len(self._sessions) >= MAX_SESSIONS:
-            evicted = next(iter(self._sessions))
-            self._sessions.pop(evicted)
-            self._locks.pop(evicted, None)
-            self._pending.pop(evicted, None)
+            # Evict the least-recently-used session that is NOT mid-turn: an
+            # in-flight turn holds its lock, and popping that lock would let a
+            # concurrent request fork the same history. If every session is
+            # mid-turn (pathological), briefly exceed the cap instead.
+            evicted = next(
+                (
+                    sid
+                    for sid in self._sessions
+                    if (lock := self._locks.get(sid)) is None or not lock.locked()
+                ),
+                None,
+            )
+            if evicted is not None:
+                self._sessions.pop(evicted)
+                self._locks.pop(evicted, None)
+                self._pending.pop(evicted, None)
         # A new message moves the conversation on: any unconfirmed action is
         # stale and must never fire later off an old card.
         self._pending.pop(session_id, None)
@@ -140,7 +154,7 @@ class Agent:
                     continue
                 content, ok = outcome
                 results.append(ToolResult(tool_call_id=call.id, content=content, is_error=not ok))
-                activity.append(ToolActivity(name=call.name, arguments=call.arguments, ok=ok))
+                activity.append(ToolActivity(name=call.name, ok=ok))
 
             history.append(Message(role="tool", tool_results=results))
 
@@ -181,9 +195,7 @@ class Agent:
             self._trim(history)
             return AgentReply(
                 text=text,
-                tool_activity=[
-                    ToolActivity(name=pending.call.name, arguments=pending.call.arguments, ok=ok)
-                ],
+                tool_activity=[ToolActivity(name=pending.call.name, ok=ok)],
             )
 
     async def _run_tool(self, session_id: str, call: ToolCall) -> tuple[str, bool] | PendingAction:

@@ -54,7 +54,9 @@ class MockProvider:
         plain = EMAIL.sub(" ", ISO_DATETIME.sub(" ", text))
         event_type_id = EVENT_TYPE_ID.search(plain)
 
-        if any(k in lowered for k in ("slot", "availab", "free", "open")):
+        # Intent keywords match on word boundaries so e.g. "reopen" isn't
+        # "open" and a "cancelled" booking being discussed isn't "cancel".
+        if re.search(r"\b(?:slots?|availab\w*|free|open)\b", lowered):
             if not event_type_id:
                 return LLMResponse(
                     text="Which event type? Tell me its numeric ID (ask me to list your event types if unsure)."
@@ -67,16 +69,19 @@ class MockProvider:
                 end=(now + timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ"),
             )
 
-        if "cancel" in lowered:
+        if re.search(r"\bcancel\b", lowered):
             uid = self._find_uid(plain)
             if not uid:
                 return _call("list_bookings", status="upcoming")
             return _call("cancel_booking", booking_uid=uid, reason="Requested via assistant")
 
-        if any(k in lowered for k in ("reschedule", "move", "push")):
+        if re.search(r"\b(?:reschedule|move|push)\b", lowered):
             uid = self._find_uid(plain)
-            if uid and iso:
-                return _call("reschedule_booking", booking_uid=uid, new_start=iso.group(0))
+            # The LAST datetime is the target: "from <old> to <new>" must
+            # reschedule to <new>, not back to <old>.
+            times = ISO_DATETIME.findall(text)
+            if uid and times:
+                return _call("reschedule_booking", booking_uid=uid, new_start=times[-1])
             return LLMResponse(
                 text="To reschedule I need the booking uid and the new start time in ISO format, "
                 "e.g. 'reschedule booking abc12345 to 2026-06-12T10:00:00Z'."
