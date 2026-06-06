@@ -78,6 +78,24 @@
   }
   .tools .ok::before { content: "✓ "; color: #4d7c4d; }
   .tools .err::before { content: "✗ "; color: var(--accent); }
+  .confirm-card {
+    align-self: flex-start;
+    background: var(--accent-soft);
+    border: 1px solid var(--accent);
+    border-radius: 14px;
+    padding: 14px 16px;
+    max-width: 78%;
+    font-size: 14px;
+  }
+  .confirm-card .summary { margin-bottom: 10px; font-weight: 600; }
+  .confirm-card .actions { display: flex; gap: 8px; }
+  .confirm-card button { padding: 8px 16px; font-size: 14px; }
+  .confirm-card button.decline {
+    background: transparent;
+    color: var(--ink);
+    border: 1px solid var(--border);
+  }
+  .confirm-card.resolved { opacity: 0.55; }
   .typing {
     align-self: flex-start;
     color: var(--muted);
@@ -167,6 +185,63 @@ function addToolActivity(activity) {
   messagesEl.appendChild(el);
 }
 
+let activeCard = null;  // at most one live confirmation card
+
+function retireActiveCard() {
+  if (!activeCard) return;
+  activeCard.querySelectorAll("button").forEach(b => b.disabled = true);
+  activeCard.classList.add("resolved");
+  activeCard = null;
+}
+
+function addPendingCard(pending) {
+  retireActiveCard();
+  const card = document.createElement("div");
+  card.className = "confirm-card";
+  const summary = document.createElement("div");
+  summary.className = "summary";
+  summary.textContent = pending.summary;
+  const actions = document.createElement("div");
+  actions.className = "actions";
+  const confirmBtn = document.createElement("button");
+  confirmBtn.textContent = "Confirm";
+  const declineBtn = document.createElement("button");
+  declineBtn.textContent = "Decline";
+  declineBtn.className = "decline";
+  actions.append(confirmBtn, declineBtn);
+  card.append(summary, actions);
+  messagesEl.appendChild(card);
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+  activeCard = card;
+
+  const decide = (approved) => async () => {
+    retireActiveCard();
+    try {
+      const res = await fetch("/api/chat/confirm", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_id: sessionId, action_id: pending.id, approved }),
+      });
+      if (!res.ok) {
+        const detail = (await res.json().catch(() => ({}))).detail;
+        addMessage("assistant", detail || "Sorry, something went wrong. Please try again.");
+        return;
+      }
+      handleReply(await res.json());
+    } catch {
+      addMessage("assistant", "I couldn't reach the server — is it still running?");
+    }
+  };
+  confirmBtn.addEventListener("click", decide(true));
+  declineBtn.addEventListener("click", decide(false));
+}
+
+function handleReply(data) {
+  addToolActivity(data.tool_activity);
+  addMessage("assistant", data.reply);
+  if (data.pending_action) addPendingCard(data.pending_action);
+}
+
 addMessage("assistant",
   "Hi! I can manage your cal.com calendar — ask me to book something, " +
   "see what's coming up, or move and cancel events.");
@@ -179,6 +254,7 @@ form.addEventListener("submit", async (e) => {
   if (!text || inFlight) return;
 
   inFlight = true;
+  retireActiveCard();  // typing a new message moves on; the server drops the pending action
   addMessage("user", text);
   input.value = "";
   sendBtn.disabled = true;
@@ -201,9 +277,7 @@ form.addEventListener("submit", async (e) => {
       addMessage("assistant", detail || "Sorry, something went wrong. Please try again.");
       return;
     }
-    const data = await res.json();
-    addToolActivity(data.tool_activity);
-    addMessage("assistant", data.reply);
+    handleReply(await res.json());
   } catch {
     typing.remove();
     addMessage("assistant", "I couldn't reach the server — is it still running?");

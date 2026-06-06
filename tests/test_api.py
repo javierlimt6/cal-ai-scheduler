@@ -58,6 +58,63 @@ async def test_chat_validates_input(api_client):
 
 
 @respx.mock
+async def test_destructive_action_needs_explicit_confirmation(api_client):
+    cancel_route = respx.post(f"{CAL_BASE}/bookings/abc123def/cancel").mock(
+        return_value=httpx.Response(
+            200, json={"status": "success", "data": {"status": "cancelled"}}
+        )
+    )
+
+    first = await api_client.post(
+        "/api/chat", json={"session_id": "s-confirm", "message": "Cancel booking abc123def"}
+    )
+
+    assert first.status_code == 200
+    body = first.json()
+    assert body["tool_activity"] == []  # nothing executed yet
+    pending = body["pending_action"]
+    assert pending is not None and "abc123def" in pending["summary"]
+    assert not cancel_route.called
+
+    second = await api_client.post(
+        "/api/chat/confirm",
+        json={"session_id": "s-confirm", "action_id": pending["id"], "approved": True},
+    )
+
+    assert second.status_code == 200
+    assert cancel_route.called
+    confirmed = second.json()
+    assert "cancelled" in confirmed["reply"].lower()
+    assert confirmed["tool_activity"] == [{"name": "cancel_booking", "ok": True}]
+
+
+async def test_confirm_with_unknown_action_is_409(api_client):
+    response = await api_client.post(
+        "/api/chat/confirm", json={"session_id": "sX", "action_id": "nope", "approved": True}
+    )
+    assert response.status_code == 409
+
+
+async def test_chat_is_rate_limited_per_session(api_client):
+    from app.main import app as main_app
+    from app.ratelimit import RateLimiter
+
+    main_app.state.rate_limiter = RateLimiter(max_requests=2, window_seconds=60)
+
+    assert (
+        await api_client.post("/api/chat", json={"session_id": "rl", "message": "help"})
+    ).status_code == 200
+    assert (
+        await api_client.post("/api/chat", json={"session_id": "rl", "message": "help"})
+    ).status_code == 200
+    blocked = await api_client.post("/api/chat", json={"session_id": "rl", "message": "help"})
+    assert blocked.status_code == 429
+
+    other = await api_client.post("/api/chat", json={"session_id": "rl2", "message": "help"})
+    assert other.status_code == 200  # per-session, not global
+
+
+@respx.mock
 async def test_username_resolved_from_me_when_unset(monkeypatch):
     """With a key but no CAL_USERNAME, startup pulls the username from /me."""
     from app.config import get_settings

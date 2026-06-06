@@ -1,9 +1,11 @@
 """The agent: per-session conversation state and the tool-use loop."""
 
 import asyncio
+import json
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from uuid import uuid4
 
 from app.agent.tools import TOOLS, ToolFunc, execute_tool
 from app.calcom import CalComError
@@ -17,6 +19,32 @@ MAX_TOOL_ITERATIONS = 8
 MAX_HISTORY_MESSAGES = 60
 # Cap the number of tracked sessions; least-recently-used are evicted first.
 MAX_SESSIONS = 500
+
+# Destructive tools are never executed off the back of an LLM decision alone.
+# The call is frozen server-side and only runs when the user explicitly
+# approves it (see Agent.resolve_pending) — so a prompt-injected booking title
+# can't talk the model into cancelling anything by itself.
+DESTRUCTIVE_TOOLS = frozenset({"cancel_booking", "reschedule_booking"})
+
+GATE_MESSAGE = (
+    "CONFIRMATION_REQUIRED: {summary}. The action is on hold — the user has been shown a "
+    "Confirm/Decline card in the chat UI and nothing happens until they click Confirm. "
+    "Tell the user in one sentence what is awaiting their confirmation and point them at "
+    "the card. Do not call the tool again."
+)
+
+
+class PendingActionError(Exception):
+    """The referenced pending action no longer exists (stale or already resolved)."""
+
+
+@dataclass
+class PendingAction:
+    """A destructive tool call frozen until the user approves it."""
+
+    id: str
+    call: ToolCall
+    summary: str
 
 
 @dataclass
@@ -32,6 +60,7 @@ class ToolActivity:
 class AgentReply:
     text: str
     tool_activity: list[ToolActivity] = field(default_factory=list)
+    pending_action: PendingAction | None = None
 
 
 class Agent:
@@ -48,6 +77,7 @@ class Agent:
         self._system_prompt = system_prompt
         self._sessions: dict[str, list[Message]] = {}
         self._locks: dict[str, asyncio.Lock] = {}
+        self._pending: dict[str, PendingAction] = {}
 
     async def chat(self, session_id: str, user_message: str) -> AgentReply:
         # Serialize turns within a session so concurrent requests can't
@@ -60,6 +90,10 @@ class Agent:
             evicted = next(iter(self._sessions))
             self._sessions.pop(evicted)
             self._locks.pop(evicted, None)
+            self._pending.pop(evicted, None)
+        # A new message moves the conversation on: any unconfirmed action is
+        # stale and must never fire later off an old card.
+        self._pending.pop(session_id, None)
         history = self._sessions.setdefault(session_id, [])
         # Re-insert to refresh recency: dict order doubles as the LRU order,
         # so active sessions aren't the ones evicted.
@@ -75,7 +109,11 @@ class Agent:
             if not response.tool_calls:
                 history.append(Message(role="assistant", content=response.text))
                 self._trim(history)
-                return AgentReply(text=response.text, tool_activity=activity)
+                return AgentReply(
+                    text=response.text,
+                    tool_activity=activity,
+                    pending_action=self._pending.get(session_id),
+                )
 
             history.append(
                 Message(
@@ -86,9 +124,21 @@ class Agent:
                 )
             )
 
-            outcomes = await asyncio.gather(*(self._run_tool(call) for call in response.tool_calls))
+            outcomes = await asyncio.gather(
+                *(self._run_tool(session_id, call) for call in response.tool_calls)
+            )
             results = []
-            for call, (content, ok) in zip(response.tool_calls, outcomes, strict=True):
+            for call, outcome in zip(response.tool_calls, outcomes, strict=True):
+                if isinstance(outcome, PendingAction):
+                    # Held, not executed: tell the LLM why, add no activity.
+                    results.append(
+                        ToolResult(
+                            tool_call_id=call.id,
+                            content=GATE_MESSAGE.format(summary=outcome.summary),
+                        )
+                    )
+                    continue
+                content, ok = outcome
                 results.append(ToolResult(tool_call_id=call.id, content=content, is_error=not ok))
                 activity.append(ToolActivity(name=call.name, arguments=call.arguments, ok=ok))
 
@@ -97,9 +147,59 @@ class Agent:
         text = "I wasn't able to finish that in a reasonable number of steps — could you rephrase or break it down?"
         history.append(Message(role="assistant", content=text))
         self._trim(history)
-        return AgentReply(text=text, tool_activity=activity)
+        return AgentReply(
+            text=text, tool_activity=activity, pending_action=self._pending.get(session_id)
+        )
 
-    async def _run_tool(self, call: ToolCall) -> tuple[str, bool]:
+    async def resolve_pending(self, session_id: str, action_id: str, approved: bool) -> AgentReply:
+        """Execute (or drop) a held destructive action on the user's explicit say-so.
+
+        This is the only path that runs a destructive tool, and it runs exactly
+        the arguments frozen when the action was proposed — the LLM is not in
+        the decision loop.
+        """
+        async with self._locks.setdefault(session_id, asyncio.Lock()):
+            pending = self._pending.get(session_id)
+            if pending is None or pending.id != action_id:
+                raise PendingActionError(
+                    "That confirmation has expired — tell me again what you'd like to do."
+                )
+            del self._pending[session_id]
+            history = self._sessions.setdefault(session_id, [])
+
+            if not approved:
+                history.append(Message(role="user", content="(I declined — don't do that.)"))
+                text = "Okay, I've left everything as it was."
+                history.append(Message(role="assistant", content=text))
+                self._trim(history)
+                return AgentReply(text=text)
+
+            content, ok = await self._execute(pending.call)
+            history.append(Message(role="user", content=f"(Confirmed: {pending.summary}.)"))
+            text = _describe_outcome(pending.call, content, ok)
+            history.append(Message(role="assistant", content=text))
+            self._trim(history)
+            return AgentReply(
+                text=text,
+                tool_activity=[
+                    ToolActivity(name=pending.call.name, arguments=pending.call.arguments, ok=ok)
+                ],
+            )
+
+    async def _run_tool(self, session_id: str, call: ToolCall) -> tuple[str, bool] | PendingAction:
+        if call.name in DESTRUCTIVE_TOOLS:
+            if session_id in self._pending:
+                return (
+                    "Another action is already awaiting the user's confirmation — "
+                    "wait for their decision before proposing this one.",
+                    False,
+                )
+            pending = PendingAction(id=uuid4().hex, call=call, summary=_describe_action(call))
+            self._pending[session_id] = pending
+            return pending
+        return await self._execute(call)
+
+    async def _execute(self, call: ToolCall) -> tuple[str, bool]:
         try:
             return await execute_tool(self._dispatch, call.name, call.arguments), True
         except CalComError as exc:
@@ -116,3 +216,31 @@ class Agent:
         del history[: len(history) - MAX_HISTORY_MESSAGES]
         while history and history[0].role != "user":
             del history[0]
+
+
+def _describe_action(call: ToolCall) -> str:
+    """One human-readable line for the confirmation card."""
+    args = call.arguments
+    if call.name == "cancel_booking":
+        summary = f"Cancel booking {args.get('booking_uid', '?')}"
+        if args.get("reason"):
+            summary += f" — {args['reason']}"
+        return summary
+    if call.name == "reschedule_booking":
+        return f"Reschedule booking {args.get('booking_uid', '?')} to {args.get('new_start', '?')}"
+    return f"Run {call.name}"
+
+
+def _describe_outcome(call: ToolCall, content: str, ok: bool) -> str:
+    """Server-authored result text for a confirmed action (no LLM in this path)."""
+    if not ok:
+        return f"That didn't work: {content}"
+    if call.name == "cancel_booking":
+        return "Done — the booking has been cancelled."
+    if call.name == "reschedule_booking":
+        try:
+            data = json.loads(content)
+            return f"Done — rescheduled to {data.get('start', 'the new time')}."
+        except ValueError:
+            return "Done — the booking has been rescheduled."
+    return f"Done — {call.name} completed."

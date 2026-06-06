@@ -135,6 +135,10 @@ class MockProvider:
         if not messages[-1].tool_results:
             return LLMResponse(text=HELP_TEXT)
         result = messages[-1].tool_results[0]
+        if result.content.startswith("CONFIRMATION_REQUIRED"):
+            return LLMResponse(
+                text="This needs your sign-off — review the card below and hit Confirm."
+            )
         if result.is_error:
             return LLMResponse(text=f"That didn't work: {result.content}")
 

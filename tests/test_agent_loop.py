@@ -1,6 +1,6 @@
 import pytest
 
-from app.agent import Agent, build_dispatch, build_system_prompt
+from app.agent import Agent, PendingActionError, build_dispatch, build_system_prompt
 from app.calcom import CalComError
 from app.llm import LLMResponse, MockProvider, ToolCall
 
@@ -68,18 +68,60 @@ async def test_book_event(agent, fake):
     assert len(fake.bookings) == 2
 
 
-async def test_cancel_booking(agent, fake):
+async def test_cancel_is_gated_then_executes_on_confirm(agent, fake):
     reply = await agent.chat("s1", "Cancel booking abc123def")
 
-    assert "cancelled" in reply.text.lower()
+    assert fake.cancelled == []  # nothing ran off the LLM's say-so
+    assert reply.tool_activity == []
+    assert reply.pending_action is not None
+    assert "abc123def" in reply.pending_action.summary
+    assert "Confirm" in reply.text  # the user is pointed at the card
+
+    done = await agent.resolve_pending("s1", reply.pending_action.id, approved=True)
+
     assert fake.cancelled == ["abc123def"]
+    assert "cancelled" in done.text.lower()
+    assert [(a.name, a.ok) for a in done.tool_activity] == [("cancel_booking", True)]
 
 
-async def test_reschedule_booking(agent):
+async def test_declining_executes_nothing_and_clears_pending(agent, fake):
+    reply = await agent.chat("s1", "Cancel booking abc123def")
+
+    done = await agent.resolve_pending("s1", reply.pending_action.id, approved=False)
+
+    assert fake.cancelled == []
+    assert "left everything" in done.text
+    with pytest.raises(PendingActionError):  # one-shot: can't approve afterwards
+        await agent.resolve_pending("s1", reply.pending_action.id, approved=True)
+
+
+async def test_reschedule_is_gated_then_executes_on_confirm(agent):
     reply = await agent.chat("s1", "Reschedule booking abc123def to 2026-06-12T10:00:00Z")
 
-    assert "Rescheduled" in reply.text
-    assert "2026-06-12T10:00:00Z" in reply.text
+    assert reply.pending_action is not None
+
+    done = await agent.resolve_pending("s1", reply.pending_action.id, approved=True)
+
+    assert "2026-06-12T10:00:00Z" in done.text
+
+
+async def test_new_message_invalidates_pending_action(agent, fake):
+    reply = await agent.chat("s1", "Cancel booking abc123def")
+    await agent.chat("s1", "What's on my calendar?")  # conversation moved on
+
+    with pytest.raises(PendingActionError):
+        await agent.resolve_pending("s1", reply.pending_action.id, approved=True)
+    assert fake.cancelled == []
+
+
+async def test_wrong_action_id_is_rejected_without_consuming_the_action(agent, fake):
+    reply = await agent.chat("s1", "Cancel booking abc123def")
+
+    with pytest.raises(PendingActionError):
+        await agent.resolve_pending("s1", "bogus-id", approved=True)
+
+    await agent.resolve_pending("s1", reply.pending_action.id, approved=True)
+    assert fake.cancelled == ["abc123def"]
 
 
 async def test_list_event_types(agent):

@@ -8,13 +8,18 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
-from app.agent import Agent, build_dispatch, build_system_prompt
+from app.agent import Agent, AgentReply, PendingActionError, build_dispatch, build_system_prompt
 from app.calcom import CalComClient, CalComError
 from app.config import get_settings
 from app.llm import LLMProviderError, get_provider
+from app.ratelimit import RateLimiter
 
 STATIC_DIR = Path(__file__).parent / "static"
 
+# Per-session ceiling on chat traffic; generous for a human, cheap insurance
+# once a paid LLM key is wired in.
+RATE_LIMIT_REQUESTS = 20
+RATE_LIMIT_WINDOW_SECONDS = 60.0
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +52,7 @@ async def lifespan(app: FastAPI):
         dispatch=build_dispatch(calcom, username),
         system_prompt=lambda: build_system_prompt(timezone),
     )
+    app.state.rate_limiter = RateLimiter(RATE_LIMIT_REQUESTS, RATE_LIMIT_WINDOW_SECONDS)
     try:
         yield
     finally:
@@ -61,14 +67,46 @@ class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=4000)
 
 
+class ConfirmRequest(BaseModel):
+    session_id: str = Field(min_length=1, max_length=128)
+    action_id: str = Field(min_length=1, max_length=64)
+    approved: bool
+
+
 class ToolActivityOut(BaseModel):
     name: str
     ok: bool
 
 
+class PendingActionOut(BaseModel):
+    # Deliberately just id + summary: raw tool arguments stay server-side.
+    id: str
+    summary: str
+
+
 class ChatResponse(BaseModel):
     reply: str
     tool_activity: list[ToolActivityOut]
+    pending_action: PendingActionOut | None = None
+
+
+def _to_chat_response(reply: AgentReply) -> ChatResponse:
+    return ChatResponse(
+        reply=reply.text,
+        tool_activity=[ToolActivityOut(name=a.name, ok=a.ok) for a in reply.tool_activity],
+        pending_action=(
+            PendingActionOut(id=reply.pending_action.id, summary=reply.pending_action.summary)
+            if reply.pending_action
+            else None
+        ),
+    )
+
+
+def _check_rate_limit(session_id: str) -> None:
+    if not app.state.rate_limiter.allow(session_id):
+        raise HTTPException(
+            status_code=429, detail="You're sending messages too quickly — give it a moment."
+        )
 
 
 @app.get("/api/health")
@@ -78,6 +116,7 @@ async def health() -> dict:
 
 @app.post("/api/chat")
 async def chat(request: ChatRequest) -> ChatResponse:
+    _check_rate_limit(request.session_id)
     try:
         reply = await app.state.agent.chat(request.session_id, request.message)
     except LLMProviderError as exc:
@@ -91,10 +130,26 @@ async def chat(request: ChatRequest) -> ChatResponse:
         raise HTTPException(
             status_code=500, detail="Something went wrong handling that message."
         ) from exc
-    return ChatResponse(
-        reply=reply.text,
-        tool_activity=[ToolActivityOut(name=a.name, ok=a.ok) for a in reply.tool_activity],
-    )
+    return _to_chat_response(reply)
+
+
+@app.post("/api/chat/confirm")
+async def confirm(request: ConfirmRequest) -> ChatResponse:
+    """Resolve a held destructive action. Only this endpoint executes one, and
+    only with the arguments frozen when it was proposed."""
+    _check_rate_limit(request.session_id)
+    try:
+        reply = await app.state.agent.resolve_pending(
+            request.session_id, request.action_id, request.approved
+        )
+    except PendingActionError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("Unhandled error in /api/chat/confirm")
+        raise HTTPException(
+            status_code=500, detail="Something went wrong resolving that action."
+        ) from exc
+    return _to_chat_response(reply)
 
 
 @app.get("/")
