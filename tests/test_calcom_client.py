@@ -129,6 +129,17 @@ async def test_error_response_raises_calcom_error(client):
 
 
 @respx.mock
+async def test_network_error_becomes_calcom_error(client):
+    respx.get(f"{BASE}/bookings").mock(side_effect=httpx.ConnectError("dns failure"))
+
+    with pytest.raises(CalComError) as exc_info:
+        await client.list_bookings()
+
+    assert exc_info.value.status_code == 503
+    assert "Could not reach cal.com" in str(exc_info.value)
+
+
+@respx.mock
 async def test_non_json_error_body_is_handled(client):
     respx.get(f"{BASE}/bookings").mock(return_value=httpx.Response(502, text="Bad Gateway"))
 

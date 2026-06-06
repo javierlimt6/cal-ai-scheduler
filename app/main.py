@@ -1,5 +1,6 @@
 """FastAPI app: serves the chat UI and the /api/chat endpoint."""
 
+import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -15,9 +16,16 @@ from app.llm import get_provider
 STATIC_DIR = Path(__file__).parent / "static"
 
 
+logger = logging.getLogger(__name__)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
+    if not settings.cal_api_key:
+        logger.warning(
+            "CAL_API_KEY is not set — cal.com calls will fail. Copy .env.example to .env."
+        )
     calcom = CalComClient(api_key=settings.cal_api_key, base_url=settings.cal_api_base_url)
     app.state.agent = Agent(
         provider=get_provider(settings.llm_provider),

@@ -47,13 +47,16 @@ class CalComClient:
     ) -> Any:
         # httpx serializes None params/body values as empty rather than
         # omitting them, so strip optional fields here in one place.
-        response = await self._http.request(
-            method,
-            path,
-            headers={"cal-api-version": api_version},
-            params={k: v for k, v in (params or {}).items() if v is not None},
-            json={k: v for k, v in json.items() if v is not None} if json is not None else None,
-        )
+        try:
+            response = await self._http.request(
+                method,
+                path,
+                headers={"cal-api-version": api_version},
+                params={k: v for k, v in (params or {}).items() if v is not None},
+                json={k: v for k, v in json.items() if v is not None} if json is not None else None,
+            )
+        except httpx.HTTPError as exc:
+            raise CalComError(503, f"Could not reach cal.com ({exc.__class__.__name__})") from exc
         if response.is_error:
             try:
                 message = response.json().get("error", {}).get("message", response.text)
