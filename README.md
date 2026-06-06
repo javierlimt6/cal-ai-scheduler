@@ -3,7 +3,8 @@
 A chatbot that lets a busy founder manage their [cal.com](https://cal.com) calendar through plain
 conversation — book events, see what's coming up, cancel, and reschedule — with a web chat UI.
 
-Built for the coding challenge described in [CHALLENGE.md](CHALLENGE.md).
+Built for the coding challenge described in [CHALLENGE.md](CHALLENGE.md). For the full
+end-to-end walkthrough of every layer, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Quick start
 

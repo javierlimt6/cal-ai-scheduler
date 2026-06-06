@@ -8,6 +8,9 @@ A conversational scheduling assistant for cal.com, built for the coding challeng
 `CHALLENGE.md`: a Python chatbot through which a user books, views, cancels, and reschedules
 cal.com events in plain language, served behind a FastAPI web chat UI.
 
+`docs/ARCHITECTURE.md` is the end-to-end reference (request lifecycle, layer contracts,
+extension points) — keep it in sync when changing structure or contracts.
+
 ## Commands
 
 Uses [uv](https://docs.astral.sh/uv/) for everything:
