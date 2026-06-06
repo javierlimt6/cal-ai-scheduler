@@ -58,6 +58,15 @@
     word-wrap: break-word;
     font-size: 15px;
   }
+  .msg ul { margin: 4px 0; padding-left: 20px; white-space: normal; }
+  .msg li { margin: 2px 0; }
+  .msg code {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 0 4px;
+    font-size: 13px;
+  }
   .user {
     align-self: flex-end;
     background: var(--accent);
@@ -149,7 +158,7 @@
   <span>your cal.com calendar, by chat</span>
 </header>
 
-<div id="messages"></div>
+<div id="messages" role="log" aria-live="polite"></div>
 
 <form id="chat-form">
   <div class="inner">
@@ -166,22 +175,79 @@ const input = document.getElementById("input");
 const sendBtn = document.getElementById("send");
 const sessionId = crypto.randomUUID();
 
+// Minimal markdown for assistant replies (bold, inline code, "- " lists).
+// Built entirely with DOM nodes — model/user text never reaches innerHTML.
+function renderInline(parent, text) {
+  const re = /(\*\*[^*]+\*\*|`[^`]+`)/g;
+  let last = 0, m;
+  while ((m = re.exec(text)) !== null) {
+    if (m.index > last) parent.appendChild(document.createTextNode(text.slice(last, m.index)));
+    const token = m[0];
+    const el = document.createElement(token.startsWith("**") ? "strong" : "code");
+    el.textContent = token.startsWith("**") ? token.slice(2, -2) : token.slice(1, -1);
+    parent.appendChild(el);
+    last = m.index + token.length;
+  }
+  if (last < text.length) parent.appendChild(document.createTextNode(text.slice(last)));
+}
+
+function renderRichText(container, text) {
+  let list = null;
+  text.split("\n").forEach((line, i) => {
+    const item = line.match(/^\s*[-*•]\s+(.*)$/);
+    if (item) {
+      if (!list) { list = document.createElement("ul"); container.appendChild(list); }
+      const li = document.createElement("li");
+      renderInline(li, item[1]);
+      list.appendChild(li);
+    } else {
+      list = null;
+      if (i > 0) container.appendChild(document.createTextNode("\n"));
+      const heading = line.match(/^#{1,4}\s+(.*)$/);
+      if (heading) {
+        const strong = document.createElement("strong");
+        renderInline(strong, heading[1]);
+        container.appendChild(strong);
+      } else {
+        renderInline(container, line);
+      }
+    }
+  });
+}
+
 function addMessage(role, text) {
   const el = document.createElement("div");
   el.className = `msg ${role}`;
-  el.textContent = text;
+  if (role === "assistant") {
+    renderRichText(el, text);
+  } else {
+    el.textContent = text;
+  }
   messagesEl.appendChild(el);
   messagesEl.scrollTop = messagesEl.scrollHeight;
   return el;
 }
 
+const TOOL_LABELS = {
+  list_bookings: "checked your calendar",
+  list_event_types: "looked up event types",
+  get_available_slots: "checked availability",
+  create_booking: "created a booking",
+  cancel_booking: "cancelled a booking",
+  reschedule_booking: "rescheduled a booking",
+};
+
 function addToolActivity(activity) {
   if (!activity || activity.length === 0) return;
   const el = document.createElement("div");
   el.className = "tools";
-  el.innerHTML = activity
-    .map(a => `<span class="${a.ok ? "ok" : "err"}">${a.name}</span>`)
-    .join(" · ");
+  activity.forEach((a, i) => {
+    if (i > 0) el.appendChild(document.createTextNode(" · "));
+    const span = document.createElement("span");
+    span.className = a.ok ? "ok" : "err";
+    span.textContent = TOOL_LABELS[a.name] || a.name;
+    el.appendChild(span);
+  });
   messagesEl.appendChild(el);
 }
 
