@@ -8,3 +8,4 @@ __pycache__/
 # Local-only project files (kept out of the published repo)
 CHALLENGE.md
 CLAUDE.md
+tmp/

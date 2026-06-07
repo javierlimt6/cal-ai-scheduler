@@ -18,7 +18,9 @@ cp .env.example .env       # add your cal.com + Anthropic API keys
 uv run uvicorn app.main:app
 ```
 
-Open http://localhost:8000 and chat. Run the tests with:
+Open http://localhost:8000 and chat. Server runs also write rotating logs to `tmp/app.log`
+(gitignored) — tool timings, held/resolved confirmations, provider errors — for
+after-the-fact debugging. Run the tests with:
 
 ```bash
 uv run pytest

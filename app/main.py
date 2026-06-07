@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 from contextlib import asynccontextmanager
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -19,6 +20,7 @@ from app.llm import LLMProviderError, get_provider
 from app.ratelimit import RateLimiter
 
 STATIC_DIR = Path(__file__).parent / "static"
+LOG_DIR = Path(__file__).resolve().parent.parent / "tmp"  # gitignored
 
 # Per-session ceiling on chat traffic; generous for a human, cheap insurance
 # once a paid LLM key is wired in.
@@ -26,6 +28,24 @@ RATE_LIMIT_REQUESTS = 20
 RATE_LIMIT_WINDOW_SECONDS = 60.0
 
 logger = logging.getLogger(__name__)
+
+
+class _FileLogHandler(RotatingFileHandler):
+    """Marker subclass: repeated lifespans (tests) must not stack handlers."""
+
+
+def _setup_file_logging() -> None:
+    """Local observability: everything the app logs also lands in tmp/app.log
+    (rotating, gitignored), so a server run can be inspected after the fact."""
+    LOG_DIR.mkdir(exist_ok=True)
+    root = logging.getLogger()
+    if any(isinstance(handler, _FileLogHandler) for handler in root.handlers):
+        return
+    handler = _FileLogHandler(LOG_DIR / "app.log", maxBytes=1_000_000, backupCount=3)
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)-7s %(name)s — %(message)s"))
+    root.addHandler(handler)
+    if root.level in (logging.NOTSET, logging.WARNING):  # let INFO through (uvicorn leaves WARNING)
+        root.setLevel(logging.INFO)
 
 
 def _validate_timezone(name: str) -> str:
@@ -42,6 +62,7 @@ def _validate_timezone(name: str) -> str:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    _setup_file_logging()
     settings = get_settings()
     if not settings.cal_api_key:
         logger.warning(

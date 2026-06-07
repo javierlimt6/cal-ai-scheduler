@@ -80,6 +80,25 @@ async def test_chat_validates_input(api_client):
     assert response.status_code == 422
 
 
+@respx.mock
+async def test_turn_activity_is_logged_to_tmp(api_client):
+    """Observability: tool executions land in the rotating tmp/app.log."""
+    from app.main import LOG_DIR
+
+    respx.get(f"{CAL_BASE}/bookings").mock(
+        return_value=httpx.Response(200, json={"status": "success", "data": []})
+    )
+    log_file = LOG_DIR / "app.log"
+    offset = log_file.stat().st_size if log_file.exists() else 0
+
+    await api_client.post(
+        "/api/chat", json={"session_id": "log-test", "message": "What's on my calendar?"}
+    )
+
+    appended = log_file.read_text()[offset:]
+    assert "tool list_bookings ok in" in appended
+
+
 async def test_whitespace_only_message_is_rejected(api_client):
     response = await api_client.post("/api/chat", json={"session_id": "s", "message": "   "})
     assert response.status_code == 422

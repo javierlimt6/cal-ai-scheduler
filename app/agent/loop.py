@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -238,6 +239,7 @@ class Agent:
                     "That confirmation has expired — tell me again what you'd like to do."
                 )
             del self._pending[session_id]
+            logger.info("pending action %s %s", action_id, "approved" if approved else "declined")
             history = self._sessions.setdefault(session_id, [])
 
             if not approved:
@@ -270,6 +272,8 @@ class Agent:
             # destructive calls in one batch could both claim it.
             pending = PendingAction(id=uuid4().hex, call=call, summary=_describe_action(call))
             self._pending[session_id] = pending
+            # ids/names only in logs — tool arguments carry attendee PII
+            logger.info("held %s for confirmation (action %s)", call.name, pending.id)
             booking = await self._fetch_booking(call)
             if isinstance(booking, dict):
                 if call.name == "reschedule_booking" and _same_instant(
@@ -303,9 +307,13 @@ class Agent:
             return None
 
     async def _execute(self, call: ToolCall) -> tuple[str, bool]:
+        started = time.monotonic()
         try:
-            return await execute_tool(self._dispatch, call.name, call.arguments), True
+            result = await execute_tool(self._dispatch, call.name, call.arguments)
+            logger.info("tool %s ok in %.0f ms", call.name, (time.monotonic() - started) * 1000)
+            return result, True
         except CalComError as exc:
+            logger.info("tool %s failed: %s", call.name, exc)
             return str(exc), False
         except Exception:
             logger.exception("Tool %s failed", call.name)
