@@ -276,6 +276,17 @@ class Agent:
             logger.info("held %s for confirmation (action %s)", call.name, pending.id)
             booking = await self._fetch_booking(call)
             if isinstance(booking, dict):
+                if booking.get("status") == "cancelled":
+                    # Dead booking (e.g. replaced by a reschedule — cal.com
+                    # mints a new uid): don't raise a doomed card.
+                    if self._pending.get(session_id) is pending:
+                        del self._pending[session_id]
+                    return (
+                        "ALREADY_CANCELLED: that booking is already cancelled. If it was "
+                        "rescheduled, the current booking has a DIFFERENT uid — find it "
+                        "with list_bookings before acting.",
+                        True,
+                    )
                 if call.name == "reschedule_booking" and _same_instant(
                     str(booking.get("start", "")), str(call.arguments.get("new_start", ""))
                 ):
@@ -415,6 +426,11 @@ def _describe_outcome(call: ToolCall, content: str, ok: bool) -> str:
         except ValueError:
             data = None
         if isinstance(data, dict):
-            return f"Done — rescheduled to {data.get('start', 'the new time')}."
+            text = f"Done — rescheduled to {data.get('start', 'the new time')}."
+            if data.get("uid"):
+                # cal.com mints a NEW booking on reschedule; putting the new
+                # uid into history stops the model acting on the dead one.
+                text += f" (The rescheduled booking's new uid is {data['uid']}.)"
+            return text
         return "Done — the booking has been rescheduled."
     return f"Done — {call.name} completed."

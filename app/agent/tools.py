@@ -164,7 +164,9 @@ TOOLS = [
         description=(
             "Move an existing booking to a new start time (check it's available with "
             "get_available_slots first). Calling this does not reschedule immediately: the app "
-            "holds the action and asks the user to confirm via a card in the UI."
+            "holds the action and asks the user to confirm via a card in the UI. NOTE: a "
+            "completed reschedule gives the booking a NEW uid — always use the newest uid for "
+            "any follow-up action."
         ),
         parameters={
             "type": "object",

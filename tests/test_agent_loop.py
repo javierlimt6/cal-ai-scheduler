@@ -132,6 +132,19 @@ async def test_reschedule_is_gated_then_executes_on_confirm(agent):
     done = await agent.resolve_pending("s1", reply.pending_action.id, approved=True)
 
     assert "2026-06-12T10:00:00Z" in done.text
+    # cal.com mints a new uid on reschedule — the outcome must surface it
+    assert "abc123defx" in done.text
+
+
+async def test_cancelling_an_already_cancelled_booking_is_not_gated(agent, fake):
+    """A booking replaced by a reschedule is dead — no doomed card."""
+    fake.bookings[0]["status"] = "cancelled"
+
+    reply = await agent.chat("s1", "Cancel booking abc123def")
+
+    assert reply.pending_action is None
+    assert fake.cancelled == []
+    assert "already cancelled" in reply.text.lower()
 
 
 async def test_card_falls_back_to_uid_without_booking_lookup(fake):
