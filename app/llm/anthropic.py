@@ -171,6 +171,11 @@ def from_anthropic_response(response: Any) -> LLMResponse:
 
 
 def _describe_status_error(exc: anthropic.APIStatusError) -> str:
+    if "credit balance" in str(exc.message).lower():
+        return (
+            "Your Anthropic account is out of credits — top up at console.anthropic.com "
+            "(Plans & Billing), or set LLM_PROVIDER=mock to keep demoing without a key."
+        )
     if isinstance(exc, anthropic.AuthenticationError):
         return "Anthropic rejected the API key — check ANTHROPIC_API_KEY in your .env."
     if isinstance(exc, anthropic.PermissionDeniedError):

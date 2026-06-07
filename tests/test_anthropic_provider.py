@@ -30,10 +30,10 @@ def _settings(**overrides) -> Settings:
     return Settings(_env_file=None, **overrides)
 
 
-def _status_error(cls, status_code):
+def _status_error(cls, status_code, message="boom"):
     request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
     response = httpx.Response(status_code, request=request)
-    return cls("boom", response=response, body=None)
+    return cls(message, response=response, body=None)
 
 
 def _provider(adaptive_supported=True, capability_lookup_fails=False):
@@ -282,6 +282,12 @@ async def test_streaming_emits_deltas_and_returns_final_message():
     ("error", "fragment"),
     [
         (_status_error(anthropic.AuthenticationError, 401), "ANTHROPIC_API_KEY"),
+        (
+            _status_error(
+                anthropic.BadRequestError, 400, message="Your credit balance is too low ..."
+            ),
+            "out of credits",
+        ),
         (_status_error(anthropic.RateLimitError, 429), "rate-limited"),
         (_status_error(anthropic.InternalServerError, 500), "temporarily unavailable"),
         (
