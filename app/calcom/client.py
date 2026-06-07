@@ -157,11 +157,14 @@ class CalComClient:
 
     async def cancel_booking(self, booking_uid: str, reason: str | None = None) -> Any:
         # quote(): the uid is LLM-supplied — it must not be able to reshape the path
+        # reason fallback: cal.com rejects a cancel without one ("Cancellation
+        # reason is required", 400) even though the docs mark it optional —
+        # live-verified 2026-06-07.
         return await self._request(
             "POST",
             f"/bookings/{quote(booking_uid, safe='')}/cancel",
             api_version=BOOKINGS_WRITE_API_VERSION,
-            json={"cancellationReason": reason},
+            json={"cancellationReason": reason or "Cancelled by the host via scheduling assistant"},
         )
 
     async def reschedule_booking(

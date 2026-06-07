@@ -128,6 +128,20 @@ async def test_cancel_booking(client):
 
 
 @respx.mock
+async def test_cancel_without_reason_sends_a_default_one(client):
+    """cal.com 400s on a missing cancellationReason (live-verified), so the
+    client must always send one."""
+    route = respx.post(f"{BASE}/bookings/uid123/cancel").mock(
+        return_value=httpx.Response(200, json={"status": "success", "data": {}})
+    )
+
+    await client.cancel_booking("uid123")
+
+    body = json.loads(route.calls.last.request.content)
+    assert body["cancellationReason"]  # non-empty default
+
+
+@respx.mock
 async def test_reschedule_booking(client):
     route = respx.post(f"{BASE}/bookings/uid123/reschedule").mock(
         return_value=httpx.Response(200, json={"status": "success", "data": {"uid": "uid124"}})

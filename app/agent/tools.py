@@ -147,9 +147,16 @@ TOOLS = [
             "type": "object",
             "properties": {
                 "booking_uid": {"type": "string"},
-                "reason": {"type": "string", "description": "Optional cancellation reason."},
+                "reason": {
+                    "type": "string",
+                    "description": (
+                        "Short cancellation reason — cal.com requires one and attendees may "
+                        "see it. Use the user's words if they gave a reason; otherwise write "
+                        "a sensible neutral one (e.g. 'Host needs to cancel')."
+                    ),
+                },
             },
-            "required": ["booking_uid"],
+            "required": ["booking_uid", "reason"],
         },
     ),
     ToolDef(

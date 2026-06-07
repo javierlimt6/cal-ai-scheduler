@@ -317,6 +317,9 @@ A deliberately thin async client. The non-obvious parts, all verified against ca
 - **No title on create** (checked, not forgotten): the `2026-02-25` create-booking body has no
   `title`/`description` input — booking titles come from the event type; only `metadata` and
   `bookingFieldsResponses` exist for extra data.
+- **Cancellation reason is required in practice** (the docs mark it optional; the live API 400s
+  without one) — the tool schema asks the model to write one, and the client defaults it so a
+  confirmed cancel can never fail on a missing reason.
 
 | Method | Endpoint |
 |---|---|

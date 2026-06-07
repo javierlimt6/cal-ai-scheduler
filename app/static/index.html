@@ -116,6 +116,11 @@
     opacity: 0.85;
     margin-bottom: 10px;
   }
+  .confirm-card .details a {
+    color: var(--ink);
+    text-decoration: underline;
+    word-break: break-all;
+  }
   .confirm-card .actions { display: flex; gap: 8px; }
   .confirm-card button { padding: 8px 16px; font-size: 14px; }
   .confirm-card button.decline {
@@ -302,6 +307,24 @@ function addToolActivity(activity) {
   messagesEl.appendChild(el);
 }
 
+// Text + clickable http(s) links, built as DOM nodes (no innerHTML; the
+// scheme-anchored regex rules out javascript: and friends).
+function appendLinkified(parent, text) {
+  const re = /https?:\/\/[^\s]+/g;
+  let last = 0, m;
+  while ((m = re.exec(text)) !== null) {
+    if (m.index > last) parent.appendChild(document.createTextNode(text.slice(last, m.index)));
+    const a = document.createElement("a");
+    a.href = m[0];
+    a.textContent = m[0];
+    a.target = "_blank";
+    a.rel = "noopener noreferrer";
+    parent.appendChild(a);
+    last = m.index + m[0].length;
+  }
+  if (last < text.length) parent.appendChild(document.createTextNode(text.slice(last)));
+}
+
 let activeCard = null;  // at most one live confirmation card
 
 function retireActiveCard() {
@@ -340,7 +363,10 @@ function addPendingCard(pending) {
   if (detailLines.length) {
     const details = document.createElement("div");
     details.className = "details";
-    details.textContent = detailLines.join("\n");
+    detailLines.forEach((line, i) => {
+      if (i > 0) details.appendChild(document.createTextNode("\n"));
+      appendLinkified(details, line);
+    });
     card.append(details);
   }
   card.append(actions);

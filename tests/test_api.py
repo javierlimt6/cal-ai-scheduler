@@ -89,13 +89,13 @@ async def test_turn_activity_is_logged_to_tmp(api_client):
         return_value=httpx.Response(200, json={"status": "success", "data": []})
     )
     log_file = LOG_DIR / "app.log"
-    offset = log_file.stat().st_size if log_file.exists() else 0
+    offset = log_file.stat().st_size if log_file.exists() else 0  # bytes
 
     await api_client.post(
         "/api/chat", json={"session_id": "log-test", "message": "What's on my calendar?"}
     )
 
-    appended = log_file.read_text()[offset:]
+    appended = log_file.read_bytes()[offset:].decode(errors="replace")  # slice bytes, not chars
     assert "tool list_bookings ok in" in appended
 
 
