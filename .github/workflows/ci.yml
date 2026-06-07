@@ -9,9 +9,11 @@ jobs:
   checks:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: astral-sh/setup-uv@v5
+      # setup-uv stopped publishing floating major tags as of v8 (supply-chain
+      # hardening) — pin the exact release.
+      - uses: astral-sh/setup-uv@v8.2.0
         with:
           enable-cache: true
 
