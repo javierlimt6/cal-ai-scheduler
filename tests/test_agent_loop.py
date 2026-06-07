@@ -181,13 +181,36 @@ async def test_confirmed_outcome_tolerates_non_dict_tool_results(agent, fake):
     assert done.tool_activity[0].ok
 
 
-async def test_new_message_invalidates_pending_action(agent, fake):
+async def test_pending_action_survives_followup_messages(agent, fake):
+    """Asking a clarifying question must not kill the confirmation card."""
     reply = await agent.chat("s1", "Cancel booking abc123def")
-    await agent.chat("s1", "What's on my calendar?")  # conversation moved on
 
-    with pytest.raises(PendingActionError):
-        await agent.resolve_pending("s1", reply.pending_action.id, approved=True)
-    assert fake.cancelled == []
+    follow_up = await agent.chat("s1", "What's on my calendar?")
+
+    assert follow_up.pending_action is not None  # card re-announced on the next reply
+    assert follow_up.pending_action.id == reply.pending_action.id
+    await agent.resolve_pending("s1", reply.pending_action.id, approved=True)
+    assert fake.cancelled == ["abc123def"]
+
+
+async def test_new_destructive_proposal_replaces_stale_pending(agent, fake):
+    first = await agent.chat("s1", "Cancel booking abc123def")
+    second = await agent.chat("s1", "Cancel booking zzz999zzz")
+
+    assert second.pending_action.id != first.pending_action.id
+    with pytest.raises(PendingActionError):  # the replaced card can't fire any more
+        await agent.resolve_pending("s1", first.pending_action.id, approved=True)
+
+    await agent.resolve_pending("s1", second.pending_action.id, approved=True)
+    assert fake.cancelled == ["zzz999zzz"]
+
+
+async def test_noop_reschedule_is_not_gated(agent):
+    """Rescheduling to the time the booking already has must not raise a card."""
+    reply = await agent.chat("s1", "Reschedule booking abc123def to 2026-06-11T14:00:00Z")
+
+    assert reply.pending_action is None
+    assert "already starts" in reply.text
 
 
 async def test_second_destructive_call_in_one_turn_is_rejected(fake):

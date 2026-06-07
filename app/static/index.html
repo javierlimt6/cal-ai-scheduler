@@ -312,9 +312,17 @@ function retireActiveCard() {
 }
 
 function addPendingCard(pending) {
-  retireActiveCard();
+  // The same unresolved action re-announced after a follow-up message:
+  // move the live card to the bottom instead of duplicating it.
+  if (activeCard && activeCard.dataset.actionId === pending.id) {
+    messagesEl.appendChild(activeCard);
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+    return;
+  }
+  retireActiveCard();  // a *different* action replaces the old card
   const card = document.createElement("div");
   card.className = "confirm-card";
+  card.dataset.actionId = pending.id;
   // First line is the headline; any further lines are booking details
   const [headline, ...detailLines] = pending.summary.split("\n");
   const summary = document.createElement("div");
@@ -519,7 +527,7 @@ form.addEventListener("submit", async (e) => {
   if (!text || inFlight) return;
 
   inFlight = true;
-  retireActiveCard();  // typing a new message moves on; the server drops the pending action
+  // NB: the pending card (if any) stays live — confirmations survive follow-up chat
   addMessage("user", text);
   input.value = "";
   input.disabled = true;  // no silent drops: you can't type into an in-flight turn

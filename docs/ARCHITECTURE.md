@@ -206,9 +206,13 @@ attendees, guests, localized old→new times, location. Lookup failure degrades 
 line. The LLM gets a `CONFIRMATION_REQUIRED` tool result; the browser gets `{id, summary}`.
 `resolve_pending` is the only executor: it id-checks, consumes the action (one-shot), runs the
 frozen call on approval, and writes a server-authored exchange into history so the next turn is
-coherent. Pending actions die with any new user message and with session eviction. Security
-property: between "model wants to cancel" and "cancellation happens" there is always a human
-click on arguments that cannot have changed since the model proposed them.
+coherent. An unresolved card **survives follow-up chat** (asking "wait, which time is it?" must
+not kill the confirmation — the card re-announces on each reply and the UI moves it to the
+bottom); it dies only when resolved, when a *newer* destructive proposal replaces it, or with
+session eviction. A reschedule whose target equals the booking's current start is rejected as a
+no-op before any card is raised. Security property: between "model wants to cancel" and
+"cancellation happens" there is always a human click on arguments that cannot have changed since
+the model proposed them.
 
 **Streaming** (`AgentEventHandler`): `chat()` takes an optional async callback and forwards the
 provider's `StreamEvent`s (`thinking`/`text` deltas) plus a `tool` event as each call completes
@@ -342,7 +346,7 @@ seam for each layer is mocked at the layer below it:
 | Suite | Mocks | Proves |
 |---|---|---|
 | `test_calcom_client.py` | HTTP via respx | auth + per-endpoint version headers, payload shapes, `None`-omission, envelope unwrap, cursor pagination (follow + page cap), error translation (dict/string/non-JSON bodies, network failures), header omitted when key is empty |
-| `test_agent_loop.py` | `FakeCalCom` behind `build_dispatch` + real `MockProvider` | all four user journeys, the confirmation-gate lifecycle (held → confirm executes / decline doesn't / one-shot / stale-id / invalidated-by-new-message), rich card details (title/attendees/localized times) + uid fallback, streamed events (tool completions incl. pending, text deltas), conversational error relay, session isolation, the regression cases (year≠event-id, email≠uid, "bookings"≠book), `raw` payload round-trip, concurrency, trim alignment, LRU eviction (incl. skip-locked), runaway-loop cap |
+| `test_agent_loop.py` | `FakeCalCom` behind `build_dispatch` + real `MockProvider` | all four user journeys, the confirmation-gate lifecycle (held → confirm executes / decline doesn't / one-shot / stale-id / survives-follow-up-chat / replaced-by-newer-proposal / no-op-reschedule rejected), rich card details (title/attendees/localized times) + uid fallback, streamed events (tool completions incl. pending, text deltas), conversational error relay, session isolation, the regression cases (year≠event-id, email≠uid, "bookings"≠book), `raw` payload round-trip, concurrency, trim alignment, LRU eviction (incl. skip-locked), runaway-loop cap |
 | `test_anthropic_provider.py` | stubbed SDK objects (no network) | neutral→Anthropic request mapping (roles, tool_use/tool_result blocks, no empty text blocks, raw replay), response→neutral mapping (text/tool calls/refusal/empty/truncation fallbacks), streaming deltas + final message, capability-aware thinking (omitted for non-adaptive models, cached, lookup-failure default), friendly error translation per SDK exception, factory behavior |
 | `test_ratelimit.py` | fake clock | window roll-over, per-key isolation, bounded key tracking |
 | `test_api.py` | respx + manual lifespan over ASGITransport | endpoint wiring end to end: health, UI serving, validation, the SSE chat round trip (tool/text events then `done`), the full confirm round trip with a detail-rich card (nothing executes before the click), 409 on stale actions, 429 on rate limit, `/me` username bootstrap, invalid-timezone handling |

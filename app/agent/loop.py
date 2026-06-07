@@ -101,10 +101,25 @@ class Agent:
         # Serialize turns within a session so concurrent requests can't
         # interleave their messages into the shared history.
         async with self._locks.setdefault(session_id, asyncio.Lock()):
-            return await self._chat(session_id, user_message, on_event)
+            # An unresolved confirmation SURVIVES follow-up chat (asking
+            # "wait, which time is it?" must not kill the card). Pop it for
+            # the duration of the turn so a new destructive proposal can take
+            # the slot; restore it afterwards if nothing replaced it — even
+            # when the turn errors out.
+            previous_pending = self._pending.pop(session_id, None)
+            try:
+                return await self._chat(session_id, user_message, on_event, previous_pending)
+            except BaseException:
+                if previous_pending is not None and session_id not in self._pending:
+                    self._pending[session_id] = previous_pending
+                raise
 
     async def _chat(
-        self, session_id: str, user_message: str, on_event: AgentEventHandler | None
+        self,
+        session_id: str,
+        user_message: str,
+        on_event: AgentEventHandler | None,
+        previous_pending: PendingAction | None,
     ) -> AgentReply:
         if session_id not in self._sessions and len(self._sessions) >= MAX_SESSIONS:
             # Evict the least-recently-used session that is NOT mid-turn: an
@@ -123,9 +138,6 @@ class Agent:
                 self._sessions.pop(evicted)
                 self._locks.pop(evicted, None)
                 self._pending.pop(evicted, None)
-        # A new message moves the conversation on: any unconfirmed action is
-        # stale and must never fire later off an old card.
-        self._pending.pop(session_id, None)
         history = self._sessions.setdefault(session_id, [])
         # Re-insert to refresh recency: dict order doubles as the LRU order,
         # so active sessions aren't the ones evicted.
@@ -150,7 +162,7 @@ class Agent:
                 return AgentReply(
                     text=response.text,
                     tool_activity=activity,
-                    pending_action=self._pending.get(session_id),
+                    pending_action=self._carry_pending(session_id, previous_pending),
                 )
 
             history.append(
@@ -197,8 +209,20 @@ class Agent:
         history.append(Message(role="assistant", content=text))
         self._trim(history)
         return AgentReply(
-            text=text, tool_activity=activity, pending_action=self._pending.get(session_id)
+            text=text,
+            tool_activity=activity,
+            pending_action=self._carry_pending(session_id, previous_pending),
         )
+
+    def _carry_pending(
+        self, session_id: str, previous: PendingAction | None
+    ) -> PendingAction | None:
+        """This turn's card: a newly gated action wins; otherwise an unresolved
+        one from an earlier turn stays alive (and re-renders in the UI)."""
+        pending = self._pending.get(session_id)
+        if pending is None and previous is not None:
+            self._pending[session_id] = pending = previous
+        return pending
 
     async def resolve_pending(self, session_id: str, action_id: str, approved: bool) -> AgentReply:
         """Execute (or drop) a held destructive action on the user's explicit say-so.
@@ -246,13 +270,25 @@ class Agent:
             # destructive calls in one batch could both claim it.
             pending = PendingAction(id=uuid4().hex, call=call, summary=_describe_action(call))
             self._pending[session_id] = pending
-            details = await self._booking_details(call)
-            if details:
-                pending.summary = details
+            booking = await self._fetch_booking(call)
+            if isinstance(booking, dict):
+                if call.name == "reschedule_booking" and _same_instant(
+                    str(booking.get("start", "")), str(call.arguments.get("new_start", ""))
+                ):
+                    # No-op reschedule: don't raise a From == To card at all
+                    if self._pending.get(session_id) is pending:
+                        del self._pending[session_id]
+                    when = _format_when(str(call.arguments.get("new_start", "?")), self._timezone)
+                    return (
+                        f"NO_CHANGE: the booking already starts at {when} — there is nothing "
+                        "to reschedule. Tell the user it is already at that time.",
+                        True,
+                    )
+                pending.summary = _describe_action_details(call, booking, self._timezone)
             return pending
         return await self._execute(call)
 
-    async def _booking_details(self, call: ToolCall) -> str | None:
+    async def _fetch_booking(self, call: ToolCall) -> Any:
         """Fetch the target booking so the confirmation card shows what's really
         at stake (title, attendees, times) — best-effort; None keeps the uid text."""
         uid = call.arguments.get("booking_uid")
@@ -261,13 +297,10 @@ class Agent:
         try:
             # Decoration only — a slow cal.com must not stall the whole tool
             # batch (this await sits inside the turn's asyncio.gather).
-            booking = await asyncio.wait_for(self._booking_lookup(str(uid)), timeout=5.0)
+            return await asyncio.wait_for(self._booking_lookup(str(uid)), timeout=5.0)
         except Exception as exc:
             logger.warning("Could not fetch booking %r for the confirmation card: %s", uid, exc)
             return None
-        if not isinstance(booking, dict):
-            return None
-        return _describe_action_details(call, booking, self._timezone)
 
     async def _execute(self, call: ToolCall) -> tuple[str, bool]:
         try:
@@ -299,6 +332,19 @@ def _describe_action(call: ToolCall) -> str:
     if call.name == "reschedule_booking":
         return f"Reschedule booking {args.get('booking_uid', '?')} to {args.get('new_start', '?')}"
     return f"Run {call.name}"
+
+
+def _same_instant(a: str, b: str) -> bool:
+    """True when two ISO datetimes denote the same moment (naive == UTC)."""
+    try:
+        first, second = datetime.fromisoformat(a), datetime.fromisoformat(b)
+    except ValueError:
+        return False
+    if first.tzinfo is None:
+        first = first.replace(tzinfo=UTC)
+    if second.tzinfo is None:
+        second = second.replace(tzinfo=UTC)
+    return first == second
 
 
 def _format_when(iso: str, timezone: str) -> str:
