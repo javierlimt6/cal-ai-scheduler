@@ -6,8 +6,8 @@ a web chat UI.
 
 ![Chat UI: listing the week and cancelling a booking behind a confirmation card](docs/screenshot.png)
 
-Built for the coding challenge described in [CHALLENGE.md](CHALLENGE.md). For the full
-end-to-end walkthrough of every layer, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+For the full end-to-end walkthrough of every layer, see
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Quick start
 

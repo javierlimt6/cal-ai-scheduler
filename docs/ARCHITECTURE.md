@@ -3,8 +3,7 @@
 This document walks the entire system — every layer, file, contract, and design decision — from a
 keystroke in the browser to a booking on cal.com and back.
 
-For a quick start, see the [README](../README.md). The original challenge brief is in
-[CHALLENGE.md](../CHALLENGE.md).
+For a quick start, see the [README](../README.md).
 
 ## 1. System overview
 
@@ -88,7 +87,6 @@ livex/
 │   └── test_api.py             # ASGI-level endpoint tests (manual lifespan)
 ├── .github/workflows/ci.yml    # ruff check/format, mypy, pytest on push/PR
 ├── docs/ARCHITECTURE.md        # this file
-├── CHALLENGE.md                # original brief
 ├── pyproject.toml              # uv project; pytest/ruff/mypy config
 ├── .python-version             # interpreter pin (uv + CI)
 └── .env.example                # CAL_API_KEY, ANTHROPIC_API_KEY, LLM_PROVIDER, ...
